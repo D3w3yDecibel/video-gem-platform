@@ -76,6 +76,9 @@ void loop() {
   ProgEntry* prog = progForSlot(activeProgram);
   static int prevActiveProgram = -1;
   if (activeProgram != prevActiveProgram) {
+    // Restore the platform palette: a program that sets its own colors
+    // (PROG_FLAG_OWNS_GLOBALS) would otherwise leave them behind.
+    buildPalette(currentPalette);
     if (prog && prog->init) prog->init();
     prevActiveProgram = activeProgram;
   }

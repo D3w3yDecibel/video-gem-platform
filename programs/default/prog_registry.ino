@@ -8,10 +8,11 @@
 ProgEntry g_programs[] = {
   PROG_ENTRY(0, prog_basic_shapes),
   PROG_ENTRY(1, prog_symmetry),
-  PROG_ENTRY_EX(2, prog_color, NULL, PROG_FLAG_OWNS_GLOBALS),
+  PROG_ENTRY_EX(2, prog_rain, prog_rain_init, PROG_FLAG_OWNS_GLOBALS),  // Digital Rain (Dewey)
   PROG_ENTRY(3, prog_inputs),
   PROG_ENTRY(4, prog_liquid),   // Liquid Light (Dewey)
   PROG_ENTRY(5, prog_mapping),  // Mapping helper (Dewey)
+  PROG_ENTRY_EX(6, prog_color, NULL, PROG_FLAG_OWNS_GLOBALS),  // Color Lab (moved from slot 2)
   PROG_ENTRY(9, prog_bitmaps),
   PROG_ENTRY(11, prog_fx),
 };
