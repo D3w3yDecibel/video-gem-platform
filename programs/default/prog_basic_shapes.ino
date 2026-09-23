@@ -118,7 +118,7 @@ const char* prog_basic_shapes_character() {
 
 static const char* const bs_presetNames[] = {
   "Nested Circles", "Bubbles", "Eye", "Mountains", "Nested Rects",
-  "Fanned Lines", "Rect Grid", "Pixel Grid", "Mystery 1", "Mystery 2", "Mystery 3", "Rects"
+  "Fanned Lines", "Rect Grid", "Pixel Grid", "Dewey Dots", "Mystery 2", "Mystery 3", "Rects"
 };
 
 const char* prog_basic_shapes_presetName(int preset) {
