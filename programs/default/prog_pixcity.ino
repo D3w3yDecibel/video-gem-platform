@@ -10,12 +10,13 @@
 //
 // Presets:
 //   k0 Balcony       — someone watching the city from a balcony
-//   k1 Neon Alley    — signs, cables and reflections in a wet street
+//   k1 Night Ride    — a motorbike tearing through the rain at night
 //   k2 Terminal      — a wall of glowing screens in a dark room
 //   k3 Skyway        — traffic streaming between the towers
 //   k4 Rooftops      — gliding over the rooftops, blimp and searchlights
 //   k5 Storm         — lashing rain and lightning
 //   k6 Windows       — a big apartment block, lives in every window
+//   k7 Neon Alley    — signs, cables and reflections in a wet street
 //
 //   k12 — press for a new city
 //
@@ -24,6 +25,7 @@
 //   p1 Speed (far left = freeze)   p2 Rain   p3 Pixel Size (1–3)
 //   p4 Traffic   p5 Lights (lit windows)   p6 Flicker   p7 Haze
 //   p8 Pan (how fast the view drifts)   p9 Lightning   p10 Signs
+//   p11 Wheelie (Night Ride only: lifts the front wheel)
 //
 // All drawing is whole-number maths and filled spans (fast on the
 // RP2040). The picture is drawn at a low "logical" resolution and each
@@ -66,6 +68,15 @@
 #define PC_BEAM     68
 #define PC_ROOM     69     // dark room behind a window
 #define PC_TV       70
+#define PC_CHROME   71     // bike chrome
+#define PC_ENGINE   72     // bike engine / panels
+#define PC_MOON     73
+#define PC_MOON2    74     // moon halo / craters
+#define PC_HOLO     75     // hologram billboard
+#define PC_HOLO2    76
+#define PC_BULB     77     // string lights
+#define PC_BULB2    78
+#define PC_EMBER    79     // cigarette ember
 
 // ─── Knobs (smoothed) ─────────────────────────────────────────────────
 static float pc_sm[16];
@@ -163,7 +174,16 @@ static void pc_buildPalette(int scheme, int haze, int flash) {
   display.setColor(PC_BEAM, Hz[0] / 4 + 60, Hz[1] / 4 + 60, Hz[2] / 4 + 70);
   display.setColor(PC_ROOM, T[0] / 5 + 6, T[1] / 5 + 5, T[2] / 4 + 10);
   display.setColor(PC_TV, 120, 170, 255);
-  for (int i = PC_TV + 1; i < 256; i++) display.setColor(i, 0, 0, 0);
+  for (int i = PC_EMBER + 1; i < 256; i++) display.setColor(i, 0, 0, 0);
+  display.setColor(PC_MOON, 235, 232, 210);
+  display.setColor(PC_MOON2, Hz[0] / 4 + 70, Hz[1] / 4 + 68, Hz[2] / 4 + 85);
+  display.setColor(PC_HOLO, pc_mixc(S[4][0], 255, 90), pc_mixc(S[4][1], 255, 90), pc_mixc(S[4][2], 255, 90));
+  display.setColor(PC_HOLO2, S[4][0] / 3 + 10, S[4][1] / 3 + 14, S[4][2] / 3 + 20);
+  display.setColor(PC_BULB, 255, 200, 120);
+  display.setColor(PC_BULB2, 120, 75, 40);
+  display.setColor(PC_EMBER, 255, 120, 40);
+  display.setColor(PC_CHROME, 175, 180, 200);
+  display.setColor(PC_ENGINE, 58, 56, 80);
   display.setColor(255, 255, 255, 255);
 }
 
@@ -424,24 +444,74 @@ static void pc_signWord(int x, int y, uint32_t h, int hue, int sc) {
   pc_text(x + 2 * sc - sc / 2, y + 2 * sc, w, n, sc, core);
 }
 
-// A generic person, from behind (standing, arms on a railing). f = size.
-static const char* const pc_person[20] = {
-  "...###...", "..#####..", "..#####..", "...###...", "....#....",
-  ".#######.", "#########", "#########", "#########", "#########",
-  ".#######.", ".#######.", "..#####..", "..##.##..", "..##.##..",
-  "..##.##..", "..##.##..", "..##.##..", "..##.##..", ".###.###."
+// A person from behind, elbows on a railing (22×40 half-dots; the
+// forearms sit on sprite rows 22–23).
+static const char* const pc_person[40] = {
+  ".........####.........",
+  "........######........",
+  ".......########.......",
+  "......#########.#.....",
+  ".......########.......",
+  ".......########.......",
+  "........######........",
+  ".........####.........",
+  ".........####.........",
+  "......##########......",
+  "....##############....",
+  "...################...",
+  "..###.##########.###..",
+  "..##..##########..##..",
+  ".###..##########..###.",
+  ".##...##########...##.",
+  ".##...##########...##.",
+  "##....##########....##",
+  "##....##########....##",
+  "##....##########....##",
+  "###...##########...###",
+  ".####.##########.####.",
+  "..########..########..",
+  "...######....######...",
+  "......##########......",
+  "......##########......",
+  "......##########......",
+  "......##########......",
+  ".......########.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  ".......###..###.......",
+  "......####..####......"
 };
-static void pc_drawPerson(int x, int y, int f, int sway) {
-  for (int r = 0; r < 20; r++)
-    for (int k = 0; k < 9; k++)
-      if (pc_person[r][k] == '#') {
-        int xs = x + k * f + (r < 5 ? sway : 0);
-        pc_fill(xs, y + r * f, xs + f, y + (r + 1) * f, PC_SIL);
-      }
-  // rim light down one side
-  pc_fill(x + 2 * f + sway, y, x + 2 * f + 1 + sway, y + 4 * f, PC_RIM);
-  pc_fill(x, y + 6 * f, x + 1, y + 10 * f, PC_RIM);
+#define PC_PERSON_W 22
+#define PC_PERSON_H 40
+
+// Draw a '#' sprite scaled by u256/256 screen px per sprite dot, with a
+// rim light on the edges that face up and to the left (the city glow).
+static void pc_blit(const char* const* spr, int sw, int sh, int x, int y, int u256, int headRows, int sway) {
+  int dw = sw * u256 >> 8, dh = sh * u256 >> 8;
+  for (int dy = 0; dy < dh; dy++) {
+    int r = (dy << 8) / u256;
+    const char* row = spr[r];
+    int xo = x + (r < headRows ? sway : 0);
+    for (int dx = 0; dx < dw; dx++) {
+      int c = (dx << 8) / u256;
+      if (row[c] != '#') continue;
+      bool edge = (c == 0 || row[c - 1] != '#') || (r == 0 || spr[r - 1][c] != '#');
+      pc_px(xo + dx, y + dy, edge ? PC_RIM : PC_SIL);
+    }
+  }
 }
+
+// A cat sitting on the rail, seen from behind, tail swishing
+static const char* const pc_cat[9] = {
+  "#...#", "##.##", "#####", "#####", ".###.", ".###.", "#####", "#####", "#####"
+};
 
 // A sagging cable between two points
 static void pc_cable(int x0, int y0, int x1, int y1, int sag) {
@@ -464,20 +534,230 @@ static void pc_sceneBalcony() {
   int LW = pc_LW, LH = pc_LH, hz = LH * 3 / 5;
   pc_sky(hz);
   int p = pc_pan >> 4;
+  int u = LH * 128 / 40;                                    // sprite scale (screen px per half-dot × 256)
+  if (u < 256) u = 256;
+  int f = u >> 7;                                           // "whole unit" ≈ 2 half-dots
+
+  // moon with a soft dithered halo and a few craters
+  int mx = LW * 3 / 4 - p / 16, my = LH / 6, mr = LH / 14 + 2;
+  for (int y = my - mr * 2; y <= my + mr * 2; y++)
+    for (int x = mx - mr * 2; x <= mx + mr * 2; x++) {
+      int dx = x - mx, dy = y - my, d2 = dx * dx + dy * dy;
+      if (d2 <= mr * mr) pc_px(x, y, (d2 > (mr - 1) * (mr - 1) && dx < 0) ? PC_MOON2 : PC_MOON);
+      else if (d2 <= mr * mr * 9 / 4 && ((x * 3 + y * 5) % 7) == 0) pc_px(x, y, PC_MOON2);
+    }
+  pc_px(mx + mr / 3, my - mr / 4, PC_MOON2); pc_px(mx - mr / 3, my + mr / 3, PC_MOON2);
+  pc_px(mx + mr / 5, my + mr / 2, PC_MOON2);
+  // clouds drifting past (see-through dither), lit along the top
+  for (int i = 0; i < 5; i++) {
+    uint32_t h = pc_hash(i, 61, 2);
+    int cw = LW / 5 + (int)(h % (uint32_t)(LW / 4 + 1));
+    int span = LW + cw * 2;
+    int cx = (int)(((h >> 8) % (uint32_t)span + pc_t / (3 + (int)(h % 3)) + p / 8) % span) - cw;
+    int cy = LH / 12 + (int)((h >> 16) % (uint32_t)(LH / 4));
+    int ch = 2 + (int)((h >> 24) % 4);
+    for (int r = 0; r < ch; r++) {
+      int inset = (r == 0 || r == ch - 1) ? cw / 5 : 0;
+      for (int x = cx + inset + (r & 1) * cw / 9; x < cx + cw - inset; x++) {
+        if (r == 0 && (x & 1) == 0) { pc_px(x, cy, PC_MOON2); continue; }
+        if (((x + r) & 1) == 0) pc_px(x, cy + r, PC_BLIMP);
+      }
+    }
+  }
+
   pc_city(0, p / 4, hz + LH / 12, LH / 8, LH / 3, 9);
   pc_cars(pc_traffic / 2, LH / 6, hz - LH / 6, 0);
+
+  // hologram billboard on its own tower (scanlines, a scrolling made-up
+  // word, bouncing bars, the odd glitch)
+  {
+    int span = LW + LW / 2;
+    int bw = LW / 4 + 4, bh = LH / 6 + 4;
+    int bx = ((LW / 5 + LW / 4 - p / 3) % span + span) % span - LW / 4;
+    int by = hz - LH / 3;
+    pc_fill(bx + bw / 3, by + bh, bx + bw * 2 / 3, hz + LH / 5, PC_MID);          // tower
+    pc_fill(bx + bw / 3, by + bh, bx + bw / 3 + 1, hz + LH / 5, PC_MID + 1);
+    bool glitch = (pc_hash(pc_t >> 3, 5, 99) & 15) == 0;
+    for (int y = by; y < by + bh; y++) {
+      int sh = glitch && ((y >> 1) & 1) ? 2 : 0;
+      if ((y & 1) == 0) pc_fill(bx + sh, y, bx + bw + sh, y + 1, PC_HOLO2);          // scanlines
+    }
+    pc_fill(bx, by, bx + bw, by + 1, PC_HOLO); pc_fill(bx, by + bh - 1, bx + bw, by + bh, PC_HOLO);
+    char w[16];
+    pc_sylMin = 2; pc_sylSpan = 2;
+    int n = pc_word(pc_hash(pc_t / 400, 8, 8), w, 9);
+    int tw = n * 4;
+    int tx = bx + bw - ((pc_t / 2) % (bw + tw));
+    pc_textClip(tx, by + 3, w, n, 1, PC_HOLO, bx + 1, bx + bw - 1);
+    for (int k = 0; k < bw / 3 - 1; k++) {                                          // bars
+      int bhh = 1 + ((pc_sin(pc_t + k * 9) + 64) * (bh - 12) >> 7);
+      if (bhh > 0) pc_fill(bx + 2 + k * 3, by + bh - 2 - bhh, bx + 4 + k * 3, by + bh - 2, PC_HOLO);
+    }
+  }
+
   pc_city(1, p / 2, hz + LH / 5, LH / 5, LH / 2, 14);
   pc_cars(pc_traffic - pc_traffic / 2, LH / 4, hz, 1);
+
+  // elevated train line: pylons, track, and every so often a train
+  int ty = hz + LH / 8;
+  for (int x = -(((p * 3 / 4) % 24) + 24) % 24; x < LW; x += 24) pc_fill(x, ty + 2, x + 2, LH, PC_RAIL);
+  pc_fill(0, ty, LW, ty + 2, PC_RAIL);
+  pc_fill(0, ty, LW, ty + 1, PC_FRAME);
+  {
+    int period = 700, tt = pc_t % period;
+    int carW = LW / 5 + 6, nCars = 5, trainW = nCars * (carW + 2);
+    int tx = LW + 10 - tt * 3;                              // runs right → left
+    if (tx > -trainW - 10) {
+      int th = LH / 24 + 3;
+      for (int c = 0; c < nCars; c++) {
+        int x0 = tx + c * (carW + 2);
+        if (x0 > LW || x0 + carW < 0) continue;
+        pc_fill(x0, ty - th, x0 + carW, ty, PC_CAR);
+        pc_fill(x0, ty - th, x0 + carW, ty - th + 1, PC_FRAME);
+        for (int wx = x0 + 2; wx < x0 + carW - 2; wx += 3) {                         // windows
+          uint32_t hw = pc_hash(c, wx - x0, 17);
+          pc_px(wx, ty - th + 2, (hw & 3) ? PC_WARM : PC_COOL);
+          pc_px(wx + 1, ty - th + 2, (hw & 3) ? PC_WARM : PC_COOL);
+        }
+      }
+      pc_px(tx, ty - 2, PC_HEAD); pc_px(tx - 1, ty - 2, PC_HEAD);                     // headlamp
+      for (int k = 2; k < 14; k += 2) pc_px(tx - k, ty - 2, PC_BEAM);
+      if ((pc_t & 7) < 2) pc_px(tx + trainW / 2, ty + 1, PC_WHITE);               // sparks off the rail
+    }
+  }
+
   pc_city(2, p, LH, LH / 8, LH / 4, 22);                   // (kept low, below the railing)
-  // balcony: floor, railing, the watcher
-  int railY = LH * 3 / 4, f = LH / 40 > 0 ? LH / 40 : 1;
-  pc_drawPerson(LW / 2 - 5 * f, railY - 8 * f, f, pc_sin(pc_t >> 3) >> 5);
-  pc_fill(0, railY + 7 * f, LW, LH, PC_SIL);                 // floor
+  pc_rain(pc_rainN, 0, 0);
+
+  // ── the balcony ──
+  int railY = LH * 3 / 4;
+  int floorY = railY + 7 * f;
+  int wallW = LW / 9 + 2;
+  // the watcher, elbows on the rail (forearms at sprite row 22)
+  int px = LW / 2 - (PC_PERSON_W * u >> 9);
+  int py = railY - (22 * u >> 8);
+  int sway = pc_sin(pc_t >> 3) >> 5;
+  pc_blit(pc_person, PC_PERSON_W, PC_PERSON_H, px, py, u, 9, sway);
+  // cigarette in the right hand: ember that brightens on a drag, smoke curling up
+  int ex = px + (19 * u >> 8), ey = railY - 1;
+  bool drag = (pc_t % 220) < 25;
+  pc_px(ex, ey, PC_WHITE); pc_px(ex + 1, ey, drag ? PC_EMBER : PC_TAIL);
+  for (int i = 0; i < 14; i++) {
+    int life = (pc_t / 2 + i * 7) % 60;
+    int sx = ex + 1 + life / 5 + (pc_sin(life * 3 + i * 11) * (1 + life / 12) >> 6);
+    int sy = ey - 1 - life;
+    if (sy > 0 && (life < 20 || ((life + i) & 1))) pc_px(sx, sy, life < 30 ? PC_STEAM : PC_MOON2);
+  }
+  // an exhaled puff drifting off after each drag
+  int pt = pc_t % 220 - 35;
+  if (pt >= 0 && pt < 60) {
+    int cx = px + (15 * u >> 8) + pt / 3 + sway, cy = py + (4 * u >> 8) - pt / 4, rr = 1 + pt / 12;
+    for (int y = cy - rr; y <= cy + rr; y++)
+      for (int x = cx - rr; x <= cx + rr; x++)
+        if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= rr * rr && ((x + y + pt) % (1 + pt / 15)) == 0) pc_px(x, y, PC_STEAM);
+  }
+
+  pc_fill(0, floorY, LW, LH, PC_SIL);                       // floor
+  // puddle on the floor mirroring the neon beyond the rail, rippling
+  int pl = LW / 4, pr = LW * 3 / 4;
+  for (int y = floorY + 1; y < LH; y++) {
+    int src = railY - 2 - (y - floorY) * 2;
+    if (src < 0) break;
+    if (((y + (pc_t >> 2)) % 3) == 0) continue;
+    int sh = pc_sin(y * 9 + pc_t) >> 5;
+    int inset = (y - floorY) * (pr - pl) / (4 * (LH - floorY + 1));
+    for (int x = pl + inset; x < pr - inset; x++) {
+      uint8_t c = pc_get(x + sh, src);
+      if (c >= PC_WARM && c < PC_RAIN) pc_px(x, y, c >= PC_NEON0 ? (uint8_t)(((c - PC_NEON0) & ~3) + PC_NEON0 + 1) : c);
+      else if (c == PC_MOON) pc_px(x, y, PC_MOON2);
+    }
+  }
+  // railing
   pc_fill(0, railY, LW, railY + 2, PC_RAIL);                 // top bar
   pc_fill(0, railY, LW, railY + 1, PC_RIM);
   pc_fill(0, railY + 6 * f, LW, railY + 6 * f + 1, PC_RAIL); // bottom bar
   for (int x = 2; x < LW; x += 5) pc_fill(x, railY + 2, x + 1, railY + 6 * f, PC_RAIL);
-  pc_rain(pc_rainN, 0, 0);
+
+  // the cat on the rail, tail swinging
+  {
+    int cu = u;
+    int cx = LW * 3 / 4, cy = railY - (9 * cu >> 8);
+    pc_blit(pc_cat, 5, 9, cx, cy, cu, 0, 0);
+    int bx = cx + (5 * cu >> 8), by = railY - 1;
+    int a = pc_sin(pc_t >> 1) >> 3;                          // −8 … 8
+    int tl = 5 * cu >> 8;
+    pc_line(bx, by, bx + tl / 2, by + tl / 2, PC_SIL);
+    pc_line(bx + tl / 2, by + tl / 2, bx + tl / 2 + a * tl / 8, by + tl + (a < 0 ? -a : a) * tl / 16, PC_SIL);
+  }
+
+  // potted plant in the corner, leaves nodding in the wind
+  {
+    int ppx = LW - LW / 8, ppy = floorY;
+    int pw = 6 * f / 2 + 3, ph = 5 * f / 2 + 3;
+    for (int y = 0; y < ph; y++) pc_fill(ppx - pw / 2 + y / 3, ppy - ph + y, ppx + pw / 2 - y / 3, ppy - ph + y + 1, PC_RAIL);
+    pc_fill(ppx - pw / 2, ppy - ph, ppx + pw / 2, ppy - ph + 1, PC_RIM);
+    for (int k = 0; k < 7; k++) {
+      int len = LH / 7 + (int)(pc_hash(k, 3, 3) % (uint32_t)(LH / 10 + 1));
+      int dir = (k - 3) * 64 / 7;
+      int wob = pc_sin((pc_t >> 2) + k * 9) >> 5;
+      int lx = ppx + dir * len / 64 + wob, ly = ppy - ph - len + (dir < 0 ? -dir : dir) * len / 160;
+      pc_line(ppx, ppy - ph, lx, ly, PC_SIL);
+      pc_line(ppx + 1, ppy - ph, lx + 1, ly, PC_SIL);
+      pc_px(lx, ly, PC_RIM);
+    }
+  }
+
+  // wall on the left: vertical neon sign and an air-conditioner dripping
+  pc_fill(0, 0, wallW, floorY, PC_NEAR);
+  pc_fill(wallW - 1, 0, wallW, floorY, PC_NEAR + 1);
+  for (int y = 6; y < floorY; y += 5) pc_fill(0, y, wallW - 1, y + 1, PC_NEAR + 2);  // brick courses
+  if (pc_neonN > 0) {
+    bool off = pc_flick && ((pc_hash(1, pc_t >> 3, 17) & 255) < (uint32_t)(pc_flick >> 2));
+    int gx = wallW / 2 - 2;
+    pc_fill(gx - 2, LH / 6 - 2, gx + 5, LH / 6 + 32, PC_NEON0 + 8 + (off ? 0 : 1));
+    pc_fill(gx - 1, LH / 6 - 1, gx + 4, LH / 6 + 31, PC_SIL);
+    for (int g = 0; g < 5; g++) pc_glyphRand(gx, LH / 6 + g * 6, pc_hash(7, g, 3), (uint8_t)(PC_NEON0 + 8 + (off ? 1 : 3)));
+  }
+  {
+    int ax = wallW, ay = railY - LH / 5, aw = LW / 12 + 3, ah = LH / 12 + 2;
+    pc_fill(ax, ay, ax + aw, ay + ah, PC_ENGINE);
+    pc_fill(ax, ay, ax + aw, ay + 1, PC_FRAME);
+    for (int y = ay + 2; y < ay + ah - 1; y += 2) pc_fill(ax + 1, y, ax + aw / 2, y + 1, PC_RAIL);   // grille
+    int fr = ah / 2 - 1, fcx = ax + aw * 3 / 4, fcy = ay + ah / 2;
+    if (fr > 1) for (int k = 0; k < 3; k++) {                                                  // spinning fan
+      int a = pc_t * 3 + k * 21;
+      pc_line(fcx, fcy, fcx + (pc_sin(a + 16) * fr >> 6), fcy + (pc_sin(a) * fr >> 6), PC_RAIL);
+    }
+    int dt = pc_t % 40;                                                                        // drip
+    pc_px(ax + aw / 2, ay + ah + dt * dt / 40, PC_RAINB);
+  }
+
+  // ceiling overhang with string lights and drips off the edge
+  int oh = LH / 14 + 1;
+  pc_fill(0, 0, LW, oh, PC_SIL);
+  pc_fill(0, oh - 1, LW, oh, PC_RIM);
+  {
+    int x0 = wallW, y0 = oh, x1 = LW, y1 = oh + 1, sag = LH / 7;
+    pc_cable(x0, y0, x1, y1, sag);
+    int n = x1 - x0;
+    for (int x = x0 + 4; x < x1; x += 8) {
+      int i = x - x0;
+      int y = y0 + (y1 - y0) * i / n + sag * 4 * i * (n - i) / (n * n);
+      uint32_t hb = pc_hash(x, 2, 29);
+      bool on = ((pc_t >> 3) + (int)(hb % 13)) % 13 != 0;
+      pc_px(x, y + 1, on ? PC_BULB : PC_BULB2);
+      if (on) { pc_px(x, y + 2, PC_BULB2); if (f > 2) { pc_px(x - 1, y + 1, PC_BULB2); pc_px(x + 1, y + 1, PC_BULB2); } }
+    }
+  }
+  for (int i = 0; i < 9; i++) {
+    uint32_t h = pc_hash(i, 9, 31);
+    int dx = wallW + (int)(h % (uint32_t)(LW - wallW));
+    int per = 30 + (int)((h >> 8) % 30);
+    int tt = (pc_t + (int)(h >> 16)) % per;
+    int dy = oh + tt * tt / 12;
+    if (dy < floorY) { pc_px(dx, dy, PC_RAINB); pc_px(dx, dy - 1, PC_RAIN); }
+    else if (dy < floorY + 4) { pc_px(dx - 1, floorY, PC_SPLASH); pc_px(dx + 1, floorY, PC_SPLASH); }
+  }
 }
 
 static void pc_sceneAlley() {
@@ -532,6 +812,263 @@ static void pc_sceneAlley() {
     if (life < 50) pc_px(x, y, PC_STEAM);
   }
   pc_rain(pc_rainN, 1, gy);
+}
+
+
+// ─── Night Ride: a motorbike in the rain ──────────────────────────────
+// Sport bike and tucked-in rider, side-on, facing right, drawn in fine
+// "half-dots" (two per bike unit s). K = dark body, D = dark engine/panels,
+// M = chrome, V = visor/windscreen, N = neon stripe, n = dim neon,
+// H = headlight, T = tail light, S = jacket seams.
+// Wheels (centres at fine 12,22 and 50,22, radius 8) are drawn
+// separately so their spokes can turn and the front can lift.
+static const char* const pc_bike[24] = {
+  "................................................................",
+  "................................................................",
+  "........................................KKKK....................",
+  ".......................................SKKKKK...................",
+  "......................................SKKKKKKK..................",
+  ".....................................KKKKKVVVVV.................",
+  "...................................K.KKKKKVVVVV.....V...........",
+  "................................KKKKKKKKKVVVVVV...VVVV..........",
+  ".............................KKKKKKKKKKKKKKKKK.VVVVVVVV.........",
+  "..........................KKKSKKKKKKKKKKKKKKKKKKVVVVKKK.........",
+  "....................K...KKKSSKKKKKKKKKKKKKKKNKKKKVKKKKKKK.......",
+  "......KKKKKKKKKKKKKKKKKKKSSKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.....",
+  "......TTKKKKKKKKnnnnnSSSSSSKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKHKK....",
+  "......TKKnnnnnnnKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKDDDDDKKKHHHH...",
+  "........KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKDDDDDKKKKKKKHHHHKK..",
+  "..................KKKKKKKKKKKKKKKKKKKKKKKKKKKKKMMKKKKKKKHHHHK...",
+  "........................DDDDDDKKKKKKKDDDDDDKKKKNMMNNNNNNNNKKK...",
+  "........................DDDDDDDDKKKKKKDDDDDKKKKKMMKKKKKKKKKK....",
+  ".........DMMM............DDMMMMMKKKMMMMMMMDD..KKKMMKKKKKKKKK....",
+  "..........DMMMMMMMM.....MMMDDDKKKKDDDDDDDDDD..K..MM.............",
+  "..............MMMMMMMMMMDDDDDMMKMMMMMMMMDDDDD....MM.............",
+  "...............MMMMMDDDDMMM.MMMMM.................MM............",
+  "............MMM.DDDD....MMM.......................MM............",
+  ".............DDD................................................"
+};
+#define PC_BIKE_W 64
+#define PC_BIKE_H 24
+
+static inline char pc_bikeAt(int c, int r) {
+  if (c < 0 || r < 0 || c >= PC_BIKE_W || r >= PC_BIKE_H) return '.';
+  return pc_bike[r][c];
+}
+
+static inline uint8_t pc_bikeCol(char ch) {
+  switch (ch) {
+    case 'K': return PC_SIL;
+    case 'D': return PC_ENGINE;
+    case 'M': return PC_CHROME;
+    case 'V': return PC_COOL;
+    case 'N': return (uint8_t)(PC_NEON0 + 4 + 3);
+    case 'n': return (uint8_t)(PC_NEON0 + 4 + 1);
+    case 'H': return PC_HEAD;
+    case 'T': return PC_TAIL;
+    default:  return PC_TRAIL;   // 'S' seams
+  }
+}
+
+// Where a fine sprite point (fx, fy) lands on screen, for a bike whose
+// rear tyre touches the road at (px, py), tilted up by the wheelie angle.
+// ca/sa are cos/sin × 256, f2 = screen pixels per two fine dots (= s).
+static inline void pc_bikePt(int fx, int fy, int px, int py, int ca, int sa, int f2, int* ox, int* oy) {
+  int ux = fx - 12, uy = fy - 30;                         // relative to the rear contact point
+  *ox = px + (((ca * ux + sa * uy) * f2) >> 9);
+  *oy = py + (((-sa * ux + ca * uy) * f2) >> 9);
+}
+
+static void pc_drawWheel(int wx, int wy, int R, int s, int spin) {
+  for (int a = 0; a < 64; a++) {
+    int cx = pc_sin(a + 16), sy = pc_sin(a);
+    pc_px(wx + ((cx * R) >> 6), wy + ((sy * R) >> 6), (a > 34 && a < 62) ? PC_RIM : PC_ENGINE);   // lit on top
+    for (int d = 1; d <= s; d++)                                                                // chunky tyre
+      pc_px(wx + ((cx * (R - d)) >> 6), wy + ((sy * (R - d)) >> 6), PC_SIL);
+  }
+  int Rr = R - s - 1;
+  for (int a = 0; a < 64; a += 2)                                                               // chrome rim
+    pc_px(wx + ((pc_sin(a + 16) * Rr) >> 6), wy + ((pc_sin(a) * Rr) >> 6), PC_CHROME);
+  for (int k = 0; k < 5; k++) {                                                                 // 5 turning spokes
+    int a = spin + k * 13;
+    pc_line(wx, wy, wx + ((pc_sin(a + 16) * Rr) >> 6), wy + ((pc_sin(a) * Rr) >> 6), PC_CHROME);
+  }
+  int rd = R / 3;                                                                               // brake disc
+  for (int a = 0; a < 64; a += 3)
+    pc_px(wx + ((pc_sin(a + 16) * rd) >> 6), wy + ((pc_sin(a) * rd) >> 6), PC_CHROME);
+}
+
+// Draw the bike with the rear tyre on the road at (px, py). Bike unit = s
+// screen pixels (a fine dot is s/2). ang = wheelie tilt in radians.
+static void pc_drawBike(int px, int py, int s, int spin, float ang) {
+  int ca = (int)(cosf(ang) * 256.0f), sa = (int)(sinf(ang) * 256.0f);
+  // wheels first (the swingarm, fork and fender sit on top of them)
+  int rx, ry, fx, fy;
+  pc_bikePt(12, 22, px, py, ca, sa, s, &rx, &ry);
+  pc_bikePt(50, 22, px, py, ca, sa, s, &fx, &fy);
+  int R = 4 * s;
+  pc_drawWheel(rx, ry, R, s, spin);
+  pc_drawWheel(fx, fy, R, s, spin + (ang > 0.05f ? pc_t : 0));   // front free-spins in the air
+  // body: walk the screen box and look each pixel up in the sprite
+  // (inverse rotation, so no holes whatever the angle)
+  int ext = 34 * s;                                        // reach of the sprite from the pivot
+  int x0 = px - 12 * s, x1 = px + ext, y0 = py - ext + 2 * s, y1 = py + s;
+  int sc = 512 / s;                                        // fine dots per screen pixel × 256
+  for (int y = y0; y < y1; y++) {
+    int dy = y - py;
+    for (int x = x0; x < x1; x++) {
+      int dx = x - px;
+      int c = (((ca * dx - sa * dy) * sc) >> 16) + 12;     // back into sprite space
+      int r = (((sa * dx + ca * dy) * sc) >> 16) + 30;
+      char ch = pc_bikeAt(c, r);
+      if (ch == '.') continue;
+      uint8_t col = pc_bikeCol(ch);
+      // neon rim light round the outline (the city glow catching the rider);
+      // the underside stays dark
+      if (ch == 'K' && (pc_bikeAt(c, r - 1) == '.' || pc_bikeAt(c + 1, r) == '.' || pc_bikeAt(c - 1, r) == '.')) col = PC_RIM;
+      pc_px(x, y, col);
+    }
+  }
+  // glowing hubs on top
+  uint8_t hub = (uint8_t)(PC_NEON0 + 4 + 3);
+  int hs = s / 2;
+  pc_fill(rx - hs, ry - hs, rx + hs + 1, ry + hs + 1, hub);
+  pc_fill(fx - hs, fy - hs, fx + hs + 1, fy + hs + 1, hub);
+}
+
+static void pc_sceneRide() {
+  int LW = pc_LW, LH = pc_LH;
+  static float rideF = 0;
+  static int lastT = 0;
+  int dtT = pc_t - lastT;
+  if (dtT < 0 || dtT > 10) dtT = 1;
+  lastT = pc_t;
+  float v = 1.2f + pc_sm[8] / 1023.0f * 5.0f;             // p8 Pan = how fast you ride
+  rideF += dtT * v;
+  if (rideF > 1.0e7f) rideF = 0;
+  int ride = (int)rideF;
+
+  int s = LH / 60 > 0 ? LH / 60 : 1;                       // bike size
+  int gy = LH * 4 / 5;                                        // where the tyres touch the road
+  int hz = LH / 2;
+  pc_sky(hz);
+  pc_city(0, ride / 8, hz + LH / 12, LH / 8, LH / 3, 9);
+  pc_city(1, ride / 3, gy - 10 * s, LH / 6, LH / 2, 15);
+
+  // overhead gantries with a sign, every so often
+  int gs = LW * 2 + 60;
+  for (int k = ride / gs - 1; k * gs - ride < LW + 40; k++) {
+    int gx = k * gs - ride + LW;
+    if (gx < -60 || gx > LW + 60) continue;
+    int top = LH / 8;
+    pc_fill(gx, top, gx + 2, gy - 8 * s, PC_RAIL);
+    pc_fill(gx + 44, top, gx + 46, gy - 8 * s, PC_RAIL);
+    pc_fill(gx, top, gx + 46, top + 2, PC_RAIL);
+    if (pc_neonN > 0) pc_signWord(gx + 6, top + 3, pc_hash(k, 4, 44), (k & 3), 1);
+  }
+  // street lights rushing past
+  int ls = LW / 2 + 10;
+  for (int k = ride / ls - 1; k * ls - ride < LW + 20; k++) {
+    int lx = k * ls - ride;
+    int top = gy - LH / 3;
+    pc_fill(lx, top, lx + 1, gy - 8 * s, PC_RAIL);
+    pc_fill(lx, top, lx + 7, top + 1, PC_RAIL);
+    pc_fill(lx + 5, top + 1, lx + 8, top + 2, PC_WARM);
+    for (int yy = top + 2; yy < gy - 8 * s; yy++) {           // glow cone (dithered)
+      int half = (yy - top) / 3;
+      for (int xx = lx + 6 - half; xx <= lx + 6 + half; xx++)
+        if (((xx + yy * 3) & 3) == 0) pc_px(xx, yy, PC_BEAM);
+    }
+  }
+  // road
+  int curb = gy - 8 * s;
+  pc_fill(0, curb, LW, curb + 1, PC_RIM);
+  pc_fill(0, curb + 1, LW, LH, PC_STREET);
+  // wet road: reflections of everything above, rippling
+  for (int y = curb + 2; y < LH; y++) {
+    int src = curb - 1 - (y - curb) * 2;
+    if (src < 0) break;
+    if (((y + (pc_t >> 1)) & 3) == 0) continue;
+    int shift = pc_sin(y * 7 + pc_t) >> 5;
+    for (int x = 0; x < LW; x++) {
+      uint8_t c = pc_get(x + shift, src);
+      if (c >= PC_WARM && c < PC_RAIN) pc_px(x, y, c >= PC_NEON0 ? (uint8_t)(((c - PC_NEON0) & ~3) + PC_NEON0 + 1) : c);
+      else if (c == PC_BEAM && ((x + y) & 3) == 0) pc_px(x, y, PC_BEAM);
+    }
+  }
+  // lane markings streaming past
+  int ly = gy + (LH - gy) / 2;
+  for (int x = -(ride % 24); x < LW; x += 24) pc_fill(x, ly, x + 10, ly + 1, PC_TEXTD);
+
+  // cars in the far lane (the bike overtakes them)
+  int nc = pc_traffic / 4;
+  for (int i = 0; i < nc; i++) {
+    uint32_t h = pc_hash(i, 12, 70);
+    int span = LW + 120;
+    int cx = LW + 60 - (int)((ride * 2 / 3 + (int)(h % (uint32_t)span)) % span);
+    int cy = curb + 2;
+    int cw = 16 * s, ch = 4 * s;
+    pc_fill(cx, cy - ch, cx + cw, cy, PC_CAR);
+    pc_fill(cx + 3 * s, cy - ch - 2 * s, cx + cw - 4 * s, cy - ch, PC_CAR);
+    pc_fill(cx, cy - ch, cx + s, cy - ch + s, PC_TAIL);                  // tail light (facing away)
+    pc_fill(cx + cw - s, cy - ch, cx + cw, cy - ch + s, PC_HEAD);
+    for (int k = 1; k < 6; k++) pc_px(cx - k, cy - ch, k < 3 ? PC_TAIL : PC_TRAIL);
+  }
+
+  // the bike, bobbing on the bumps — p11 Wheelie lifts the front
+  static float wAng = 0;
+  float wTarget = pc_sm[11] / 1023.0f * 0.55f;               // up to ~32°
+  if (wTarget > 0.08f) wTarget += (pc_sin(pc_t >> 1) * 0.04f) / 64.0f;   // balancing wobble
+  wAng += (wTarget - wAng) * 0.25f;
+  if (wAng < 0) wAng = 0;
+  int ca = (int)(cosf(wAng) * 256.0f), sa = (int)(sinf(wAng) * 256.0f);
+  int bump = (wAng < 0.05f && (pc_hash(pc_t >> 2, 0, 3) & 7) == 0) ? -1 : 0;
+  int px = LW * 2 / 5 - 3 * s + (pc_sin(pc_t >> 3) >> 5);    // rear tyre contact
+  int py = gy + bump;
+  // headlight beam ahead (dithered), tilted up with the bike
+  int hx, hyy;
+  pc_bikePt(60, 14, px, py, ca, sa, s, &hx, &hyy);
+  int tn = ca > 0 ? sa * 256 / ca : 0;                      // beam slope × 256
+  for (int x = hx + 1; x < LW; x++) {
+    int d = x - hx, half = d / 4;
+    int cy = hyy - ((d * tn) >> 8);
+    int ya = cy - half / 2, yb = cy + half;
+    if (ya < 0) ya = 0;
+    if (yb > gy) yb = gy;
+    for (int y = ya; y <= yb; y++)
+      if (((x + y + (pc_t >> 1)) & (d < 30 ? 1 : 3)) == 0) pc_px(x, y, d < 12 ? PC_HEAD : PC_BEAM);
+  }
+  if (wAng < 0.12f)                                          // streak on the wet road (gone when the wheel's up)
+    for (int x = hx; x < LW; x += 2) pc_px(x, gy + (x - hx) / 16 + 1, PC_HEAD);
+  // tail-light streak behind
+  int tx, ty;
+  pc_bikePt(6, 12, px, py, ca, sa, s, &tx, &ty);
+  for (int k = 1; k < 18 * s; k++) pc_px(tx - k, ty + (k * sa) / 2048, k < 6 * s ? PC_TAIL : PC_TRAIL);
+  pc_drawBike(px, py, s, -(ride / 2), wAng);
+  // spray off the back wheel (a rooster tail when you're up on one)
+  int nSpray = 24 + (int)(wAng * 90);
+  for (int i = 0; i < nSpray; i++) {
+    uint32_t h = pc_hash(i, 21, 13);
+    int life = (pc_t * 2 + (int)(h % 32)) & 31;
+    int sx = px - life * (1 + (int)(h % 3)) / 2;
+    int lift = 12 + (int)(wAng * 14);
+    int sy = gy - (life * (lift - life / 3)) / 16;
+    if (sy <= gy) pc_px(sx, sy, (h >> 8) & 1 ? PC_SPLASH : PC_RAIN);
+  }
+  // rain, blown sideways by the speed
+  for (int i = 0; i < pc_rainN + 40; i++) {
+    uint32_t h = pc_hash(i, 5, 11);
+    int spd = 4 + (int)(h % 3);
+    int span = LH + 12;
+    int y = (int)((pc_t * spd + (int)((h >> 4) % (uint32_t)span)) % span) - 6;
+    int slant = 1 + (int)v;                                   // faster = more sideways
+    int x = (int)((h >> 12) % (uint32_t)(LW + 40)) - (y * slant) / 3;
+    x = ((x % (LW + 40)) + LW + 40) % (LW + 40) - 20;
+    int bc = hyy - (((x - hx) * tn) >> 8);
+    bool lit = x > hx && y > bc - (x - hx) / 8 && y < bc + (x - hx) / 4;
+    uint8_t c = lit ? PC_WHITE : (((h >> 26) & 3) == 0 ? PC_RAINB : PC_RAIN);
+    for (int k = 0; k < 3; k++) pc_px(x - (k * slant) / 3, y + k, c);
+  }
 }
 
 static void pc_sceneTerminal() {
@@ -712,20 +1249,20 @@ const char* prog_pixcity_name() { return "PIXEL CITY"; }
 const char* prog_pixcity_character() { return "Pixel-art cyberpunk scenes: rain, neon, traffic and glowing screens"; }
 
 static const char* const pc_presetNames[] = {
-  "Balcony", "Neon Alley", "Terminal", "Skyway", "Rooftops", "Storm", "Windows"
+  "Balcony", "Night Ride", "Terminal", "Skyway", "Rooftops", "Storm", "Windows", "Neon Alley"
 };
-#define PC_NUM_PRESETS 7
+#define PC_NUM_PRESETS 8
 
 const char* prog_pixcity_presetName(int preset) {
   if (preset >= 0 && preset < PC_NUM_PRESETS) return pc_presetNames[preset];
   return NULL;
 }
 
-static const char* const pc_labels[11] = {
-  "Palette", "Speed", "Rain", "Pixel Size", "Traffic", "Lights", "Flicker", "Haze", "Pan", "Lightning", "Signs"
+static const char* const pc_labels[12] = {
+  "Palette", "Speed", "Rain", "Pixel Size", "Traffic", "Lights", "Flicker", "Haze", "Pan", "Lightning", "Signs", "Wheelie"
 };
 const char* prog_pixcity_potLabel(int preset, int pot) {
-  (void)preset;
+  if (pot == 11) return preset == 1 ? pc_labels[11] : "";   // Wheelie is Night Ride only
   if (pot >= 0 && pot < 11) return pc_labels[pot];
   return "";
 }
@@ -785,7 +1322,8 @@ void prog_pixcity_draw(int preset) {
   pc_buildPalette(scheme, haze, (pc_flashT > 0 && (pc_flashT & 1)) ? 1 : 0);
 
   switch (preset) {
-    case 1:  pc_sceneAlley(); break;
+    case 1:  pc_sceneRide(); break;
+    case 7:  pc_sceneAlley(); break;
     case 2:  pc_sceneTerminal(); break;
     case 3:  pc_sceneSkyway(); break;
     case 4:  pc_sceneRooftops(); break;
