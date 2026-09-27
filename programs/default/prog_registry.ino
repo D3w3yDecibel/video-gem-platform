@@ -13,10 +13,10 @@ ProgEntry g_programs[] = {
   PROG_ENTRY(4, prog_liquid),   // Liquid Light (Dewey)
   PROG_ENTRY(5, prog_hypno),    // Hypnotic (Dewey)
   PROG_ENTRY_EX(6, prog_color, NULL, PROG_FLAG_OWNS_GLOBALS),  // Color Lab (moved from slot 2)
-  PROG_ENTRY(7, prog_inputs),   // Inputs (moved from slot 3)
+  PROG_ENTRY_EX(7, prog_tiles, prog_tiles_init, PROG_FLAG_OWNS_GLOBALS),  // Tile Runner (Dewey; replaced Inputs)
   PROG_ENTRY_EX(8, prog_weave, prog_weave_init, PROG_FLAG_OWNS_GLOBALS),  // Weave (Dewey)
   PROG_ENTRY_EX(9, prog_nodes, prog_nodes_init, PROG_FLAG_OWNS_GLOBALS),  // Nodes (Dewey; replaced Bitmaps)
-  PROG_ENTRY(10, prog_fx),      // FX demo (moved from slot 11)
+  PROG_ENTRY_EX(10, prog_cloud, prog_cloud_init, PROG_FLAG_OWNS_GLOBALS),  // Data Cloud (Dewey; replaced FX demo)
   PROG_ENTRY(11, prog_mapping), // Mapping helper (Dewey, moved from slot 5)
 };
 int g_numPrograms = sizeof(g_programs) / sizeof(g_programs[0]);
