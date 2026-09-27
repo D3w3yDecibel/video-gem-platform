@@ -58,6 +58,36 @@ void setup() {
 }
 
 // =====================================================================
+// OVERLAY COLOURS
+// The info screen (hold k13), hints and toasts draw with palette entries
+// 0, 80, 100, 128, 180, 200 and 255, assuming those are black → white.
+// Programs that make their own colours (PROG_FLAG_OWNS_GLOBALS) may have
+// set those entries to black or anything else, which made the overlay
+// invisible. So while an overlay is showing for such a program we swap
+// in plain greys, and put the program's own colours back afterwards.
+// =====================================================================
+static const uint8_t kOverlayIdx[7] = {0, 80, 100, 128, 180, 200, 255};
+static uint16_t overlaySaved[7];
+static bool overlayColorsActive = false;
+
+static void overlayColorsOn() {
+  if (!overlayColorsActive) {
+    for (int i = 0; i < 7; i++) overlaySaved[i] = display.getColor(kOverlayIdx[i]);
+    overlayColorsActive = true;
+  }
+  for (int i = 0; i < 7; i++) {
+    uint8_t v = kOverlayIdx[i];                 // entry n → grey of brightness n
+    display.setColor(kOverlayIdx[i], v, v, v);
+  }
+}
+
+static void overlayColorsOff() {
+  if (!overlayColorsActive) return;
+  for (int i = 0; i < 7; i++) display.setColor(kOverlayIdx[i], overlaySaved[i]);
+  overlayColorsActive = false;
+}
+
+// =====================================================================
 // MAIN LOOP
 // =====================================================================
 
@@ -72,10 +102,17 @@ void loop() {
     nextPotUpdateTime = millis() + potIntervalMS;
   }
 
+  // Put back any colours the overlay borrowed last frame
+  overlayColorsOff();
+
   // ─── Program lookup + init on switch ─────────────────────────────
   ProgEntry* prog = progForSlot(activeProgram);
+  bool ownsColors = prog && (prog->flags & PROG_FLAG_OWNS_GLOBALS);
   static int prevActiveProgram = -1;
   if (activeProgram != prevActiveProgram) {
+    // Restore the platform palette: a program that sets its own colors
+    // (PROG_FLAG_OWNS_GLOBALS) would otherwise leave them behind.
+    buildPalette(currentPalette);
     if (prog && prog->init) prog->init();
     prevActiveProgram = activeProgram;
   }
@@ -102,6 +139,7 @@ void loop() {
 
   // ─── k13 hold → full info overlay (replaces visualization) ─────
   if (k13Holding) {
+    if (ownsColors) overlayColorsOn();
     drawInfoOverlay();
     display.swap(true, true);
 #ifndef UNIT_TEST
@@ -114,6 +152,7 @@ void loop() {
   if (hintsEnabled) {
     updateHints();
     if (hintsWantFullScreen()) {
+      if (ownsColors) overlayColorsOn();
       drawHints();
       display.swap(true, true);
 #ifndef UNIT_TEST
@@ -154,6 +193,7 @@ void loop() {
 
   // ─── Hints: draw bottom bar / indicator over the visualization ──
   if (hintsEnabled) {
+    if (ownsColors) overlayColorsOn();
     drawHints();
   }
 

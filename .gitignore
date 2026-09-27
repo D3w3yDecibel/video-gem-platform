@@ -16,3 +16,6 @@ local.mk
 
 # macOS
 .DS_Store
+
+# Files the Claude app mirrors into this folder (previews, drafts)
+Claude outputs/
