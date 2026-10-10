@@ -10,6 +10,8 @@ ProgEntry g_programs[] = {
   PROG_ENTRY_EX(1, prog_dispatch, prog_dispatch_init, PROG_FLAG_OWNS_GLOBALS),  // Dot Dispatch (Dewey) — replaces Basic Shapes
   PROG_ENTRY_EX(2, prog_spectrum, prog_spectrum_init, PROG_FLAG_OWNS_GLOBALS),  // Spectrum Flow (Dewey) — replaces Color Lab
   PROG_ENTRY_EX(3, prog_ascii, prog_ascii_init, PROG_FLAG_OWNS_GLOBALS),  // ASCII Worlds (Dewey) — replaces Inputs
+  PROG_ENTRY_EX(4, prog_array, prog_array_init, PROG_FLAG_OWNS_GLOBALS),  // Illuminated Array (Dewey) — new on slot 4
+  PROG_ENTRY_EX(5, prog_chaos, prog_chaos_init, PROG_FLAG_OWNS_GLOBALS),  // Chaos Crown (Dewey) — new on slot 5
   PROG_ENTRY(9, prog_bitmaps),
   PROG_ENTRY(11, prog_fx),
 };
