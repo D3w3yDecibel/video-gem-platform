@@ -20,12 +20,19 @@
 //   k12 — DISPATCH: blast every dot outwards (they fall back into place)
 //
 // Knobs (this program owns the global knobs and makes its own colours):
-//   p0 Palette (centre = original colours)   p1 Speed (far left = freeze)
+//   p0 Palette (8 schemes, centre = Dispatch)   p1 Speed (far left = freeze)
 //   p2 Dot Size   p3 Density   p4 (per scene: Ripple/Wobble/Fold/Lens/
 //   Waves/Twist/Bump/Plasma)   p5 Spin   p6 Zoom   p7 (per scene:
 //   Dissolve/Fly-Thru/Stripes/Offset/Height/Curve/Scatter/Contrast)
 //   p8 Colour Shift   p9 Fringe (RGB edges)   p10 Mirror (off/2/4)
 //   p11 Background dots
+//   p12 Color Cycle (colours flow through the ramps and the colour wheel
+//       turns — keeps going even when Speed is frozen)
+//   p13 Pop (contrast + saturation punch)   p14 Morph (sways between the
+//       chosen scheme and the next one)
+//
+// Colour schemes on p0, left → right: Mono, Duotone, Toxic, Tokyo,
+//   Dispatch (centre), Acid, Infrared, Liquid Light
 //
 // All per-dot maths is whole-number (no floats in the loops), and dots
 // are drawn as filled spans, so it stays quick on the RP2040.
@@ -48,75 +55,155 @@
 #define DD_ICE     192    // 56: navy → blue → purple → white → orange → red
 #define DD_ICE_N   56
 
-static int dd_scheme = 0;
+// Eight colour schemes (p0). Each has an "ember" ramp (64), an "ice"
+// ramp (56), the background colours, and how the colour wheel behaves.
+// They're built with hard, punchy contrasts: dark → saturated → white.
+#define DD_NSCHEME 8
+static const char* const dd_schemeNames[DD_NSCHEME] = {
+  "Dispatch", "Acid", "Tokyo", "Infrared", "Toxic", "Liquid Light", "Duotone", "Mono"
+};
+static const uint8_t dd_embS[DD_NSCHEME][7][4] = {
+  {{0,0,0,0},{10,90,0,20},{24,220,0,30},{36,255,40,10},{48,255,140,0},{58,255,220,120},{63,255,250,230}},   // Dispatch
+  {{0,0,0,0},{10,40,0,70},{24,200,0,160},{36,255,40,120},{48,180,255,0},{58,230,255,120},{63,255,255,255}}, // Acid
+  {{0,0,0,0},{10,0,20,70},{24,0,120,255},{36,0,230,255},{48,255,60,200},{58,255,160,230},{63,255,255,255}}, // Tokyo
+  {{0,0,0,0},{10,30,0,80},{24,160,0,140},{36,255,0,40},{48,255,140,0},{58,255,240,40},{63,255,255,255}},    // Infrared
+  {{0,0,0,0},{10,0,30,40},{24,0,120,110},{36,0,220,140},{48,170,255,0},{58,240,255,80},{63,255,255,220}},   // Toxic
+  {{0,0,0,0},{10,40,0,90},{24,180,0,200},{36,255,0,100},{48,255,150,0},{58,255,230,0},{63,255,255,200}},    // Liquid Light
+  {{0,0,0,0},{16,0,0,0},{20,255,0,40},{40,255,0,40},{44,255,255,255},{58,255,255,255},{63,255,255,255}},     // Duotone
+  {{0,0,0,0},{12,0,0,0},{24,90,90,90},{36,160,160,160},{48,255,255,255},{58,255,255,255},{63,255,255,255}}, // Mono
+};
+static const uint8_t dd_iceS[DD_NSCHEME][8][4] = {
+  {{0,0,0,40},{8,0,40,255},{18,140,0,200},{28,120,200,255},{34,255,255,255},{42,255,170,60},{49,255,80,0},{55,220,0,20}},
+  {{0,0,0,0},{8,60,0,120},{18,255,0,200},{28,255,120,255},{34,255,255,255},{42,200,255,60},{49,80,255,0},{55,0,120,40}},
+  {{0,10,0,30},{8,90,0,180},{18,255,0,140},{28,255,90,200},{34,255,255,255},{42,120,255,255},{49,0,200,255},{55,0,60,160}},
+  {{0,0,0,0},{8,0,0,120},{18,120,0,160},{28,230,0,60},{34,255,120,0},{42,255,230,0},{49,255,255,200},{55,255,255,255}},
+  {{0,0,0,30},{8,0,40,120},{18,0,160,200},{28,0,255,180},{34,230,255,230},{42,255,255,0},{49,255,140,0},{55,180,40,0}},
+  {{0,0,10,40},{8,0,90,100},{18,0,200,90},{28,230,255,0},{34,255,255,255},{42,255,0,160},{49,120,0,220},{55,30,0,120}},
+  {{0,0,0,0},{8,0,30,255},{18,0,30,255},{22,255,255,255},{34,255,255,255},{38,255,0,40},{49,255,0,40},{55,0,0,0}},
+  {{0,0,0,0},{8,255,255,255},{18,0,0,0},{28,255,255,255},{34,255,255,255},{42,0,0,0},{49,255,255,255},{55,40,40,40}},
+};
+// background (cream field) and the dot on it
+static const uint8_t dd_bgS[DD_NSCHEME][6] = {
+  {240,205,140, 120,70,30}, {200,255,0, 60,0,90}, {255,60,170, 40,0,60}, {255,210,0, 80,0,40},
+  {0,255,170, 0,60,70}, {255,150,0, 90,0,90}, {255,255,255, 255,0,40}, {240,240,240, 0,0,0}
+};
+static const uint8_t dd_hueMode[DD_NSCHEME] = {0, 0, 0, 0, 0, 0, 1, 2};   // 0 rainbow, 1 two-tone, 2 grey
 
-static void dd_setc(int i, int r, int g, int b) {
-  int R = r, G = g, B = b;
-  switch (dd_scheme) {
-    case 1: R = g; G = b; B = r; break;
-    case 2: R = b; G = r; B = g; break;
-    case 3: { int l = (r * 3 + g * 6 + b) / 10; R = l; G = l * 92 / 100; B = l * 78 / 100; } break;
-    case 4: if (i != 0) { R = 255 - r; G = 255 - g; B = 255 - b; } break;
-    default: break;
-  }
-  display.setColor(i, (uint8_t)R, (uint8_t)G, (uint8_t)B);
-}
+// working ramps: A = chosen scheme, B = its neighbour (for Morph)
+static uint8_t dd_eA[64][3], dd_eB[64][3], dd_iA[DD_ICE_N][3], dd_iB[DD_ICE_N][3];
+static uint8_t dd_curve[256];                  // contrast curve (Pop)
+static int dd_satK = 256;                      // saturation boost, Q8
+static bool dd_flash = false;                  // k12 blast flashes the colours inverted
 
-// piecewise-linear ramp: stops are {index, r, g, b}
-static void dd_ramp(int base, const uint8_t (*st)[4], int ns) {
+static void dd_rampFill(const uint8_t (*st)[4], int ns, uint8_t (*out)[3]) {
   for (int k = 0; k < ns - 1; k++) {
     int i0 = st[k][0], i1 = st[k + 1][0];
     for (int i = i0; i <= i1; i++) {
       int f = (i1 > i0) ? (i - i0) * 256 / (i1 - i0) : 0;
-      dd_setc(base + i, st[k][1] + ((st[k + 1][1] - st[k][1]) * f >> 8),
-                        st[k][2] + ((st[k + 1][2] - st[k][2]) * f >> 8),
-                        st[k][3] + ((st[k + 1][3] - st[k][3]) * f >> 8));
+      for (int c = 0; c < 3; c++) out[i][c] = (uint8_t)(st[k][c + 1] + ((st[k + 1][c + 1] - st[k][c + 1]) * f >> 8));
     }
   }
 }
 
-static void dd_hsv(int i, int h, int v) {        // h 0..191 around the wheel, v 0..255
-  int seg = h / 32, f = (h % 32) * 8;
-  int q = v * (255 - f) / 255, t = v * f / 255;
-  int r, g, b;
-  switch (seg) {
-    case 0: r = v; g = t; b = 0; break;
-    case 1: r = q; g = v; b = 0; break;
-    case 2: r = 0; g = v; b = t; break;
-    case 3: r = 0; g = q; b = v; break;
-    case 4: r = t; g = 0; b = v; break;
-    default: r = v; g = 0; b = q; break;
-  }
-  dd_setc(i, r, g, b);
+// final colour: saturation boost, contrast curve, optional flash
+static void dd_out(int i, int r, int g, int b) {
+  int l = (r * 77 + g * 150 + b * 29) >> 8;
+  r = l + ((r - l) * dd_satK >> 8); g = l + ((g - l) * dd_satK >> 8); b = l + ((b - l) * dd_satK >> 8);
+  r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+  r = dd_curve[r]; g = dd_curve[g]; b = dd_curve[b];
+  if (dd_flash && i != 0) { r = 255 - r; g = 255 - g; b = 255 - b; }
+  display.setColor(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
 }
 
-static int dd_palKey = -1;
-static void dd_buildPalette(int scheme) {
-  dd_palKey = scheme;
-  dd_scheme = scheme;
-  for (int i = 0; i < 256; i++) dd_setc(i, 0, 0, 0);
-  dd_setc(DD_BG, 232, 200, 145);
-  dd_setc(DD_BGDOT, 150, 110, 70);
-  dd_setc(DD_GRID, 40, 40, 48);
-  dd_setc(DD_RED, 255, 30, 40);
-  dd_setc(DD_GRN, 40, 255, 90);
-  dd_setc(DD_BLU, 50, 90, 255);
-  dd_setc(DD_YEL, 255, 230, 60);
-  dd_setc(DD_WHITE, 255, 255, 255);
-  dd_setc(DD_TRI, 255, 150, 40);
-  for (int i = 0; i < 32; i++) { int g = 10 + i * 245 / 31; dd_setc(DD_GREY + i, g, g, g + (31 - i) / 3); }
-  static const uint8_t emb[][4] = {
-    {0, 0, 0, 0}, {10, 60, 0, 10}, {24, 170, 10, 20}, {36, 230, 40, 20},
-    {48, 245, 130, 40}, {58, 250, 200, 120}, {63, 245, 228, 180}
-  };
-  dd_ramp(DD_EMB, emb, 7);
-  for (int i = 0; i < 32; i++) { dd_hsv(DD_HUE + i, i * 6, 255); dd_hsv(DD_HUED + i, i * 6, 110); }
-  static const uint8_t ice[][4] = {
-    {0, 5, 10, 50}, {8, 20, 50, 190}, {18, 110, 50, 150}, {28, 170, 190, 255},
-    {34, 245, 245, 255}, {42, 250, 170, 90}, {49, 240, 90, 20}, {55, 200, 30, 10}
-  };
-  dd_ramp(DD_ICE, ice, 8);
-  dd_setc(255, 255, 255, 255);
+// write a ramp into the palette, cycled by offQ8 (ramp steps × 256),
+// bouncing back and forth so it never jumps
+static void dd_cycleOut(uint8_t (*src)[3], int n, int base, int offQ8) {
+  int P = 2 * (n - 1) * 256;
+  for (int i = 0; i < n; i++) {
+    int q = (i * 256 + offQ8) % P;
+    if (q < 0) q += P;
+    if (q > (n - 1) * 256) q = P - q;
+    int k = q >> 8, f = q & 255, k1 = k + 1 < n ? k + 1 : k;
+    dd_out(base + i, (src[k][0] * (256 - f) + src[k1][0] * f) >> 8,
+                     (src[k][1] * (256 - f) + src[k1][1] * f) >> 8,
+                     (src[k][2] * (256 - f) + src[k1][2] * f) >> 8);
+  }
+}
+
+static void dd_hsvRGB(int h, int v, int* r, int* g, int* b) {   // h 0..191 around the wheel
+  int seg = h / 32, f = (h % 32) * 8;
+  int q = v * (255 - f) / 255, t = v * f / 255;
+  switch (seg) {
+    case 0: *r = v; *g = t; *b = 0; break;
+    case 1: *r = q; *g = v; *b = 0; break;
+    case 2: *r = 0; *g = v; *b = t; break;
+    case 3: *r = 0; *g = q; *b = v; break;
+    case 4: *r = t; *g = 0; *b = v; break;
+    default: *r = v; *g = 0; *b = q; break;
+  }
+}
+
+// scheme a (blended toward b by w/256), ramps cycled by cyc (Q8 steps),
+// colour wheel turned by hueOff (0..191), pop 0..1023
+static void dd_buildPalette(int a, int b, int w, int cyc, int hueOff, int pop) {
+  // contrast: blend towards an S-curve, and push saturation
+  int k = pop >> 2;                                              // 0 … 255
+  for (int v = 0; v < 256; v++) {
+    int sc = v * v * (765 - 2 * v) / 65025;                      // smoothstep
+    int sc2 = sc * sc * (765 - 2 * sc) / 65025;                  // twice for real bite
+    dd_curve[v] = (uint8_t)(v + ((sc2 - v) * k >> 8));
+  }
+  dd_satK = 256 + pop / 5;
+  dd_rampFill(dd_embS[a], 7, dd_eA);
+  dd_rampFill(dd_iceS[a], 8, dd_iA);
+  int bgc[6];
+  for (int c = 0; c < 6; c++) bgc[c] = dd_bgS[a][c];
+  if (w > 0) {
+    dd_rampFill(dd_embS[b], 7, dd_eB);
+    dd_rampFill(dd_iceS[b], 8, dd_iB);
+    for (int i = 0; i < 64; i++) for (int c = 0; c < 3; c++) dd_eA[i][c] = (uint8_t)(dd_eA[i][c] + ((dd_eB[i][c] - dd_eA[i][c]) * w >> 8));
+    for (int i = 0; i < DD_ICE_N; i++) for (int c = 0; c < 3; c++) dd_iA[i][c] = (uint8_t)(dd_iA[i][c] + ((dd_iB[i][c] - dd_iA[i][c]) * w >> 8));
+    for (int c = 0; c < 6; c++) bgc[c] += (dd_bgS[b][c] - bgc[c]) * w >> 8;
+  }
+  for (int i = 0; i < 256; i++) display.setColor(i, 0, 0, 0);   // unused slots stay black
+  dd_out(DD_BG, bgc[0], bgc[1], bgc[2]);
+  dd_out(DD_BGDOT, bgc[3], bgc[4], bgc[5]);
+  const uint8_t* acc = dd_iA[28];                               // the scheme's accent
+  dd_out(DD_GRID, acc[0] / 5 + 20, acc[1] / 5 + 20, acc[2] / 5 + 24);
+  dd_out(DD_RED, 255, 20, 40);
+  dd_out(DD_GRN, 30, 255, 90);
+  dd_out(DD_BLU, 40, 80, 255);
+  dd_out(DD_YEL, 255, 235, 40);
+  dd_out(DD_WHITE, 255, 255, 255);
+  dd_out(DD_TRI, dd_eA[48][0], dd_eA[48][1], dd_eA[48][2]);
+  // greys, tinted with the accent: black → accent → white
+  for (int i = 0; i < 32; i++) {
+    int r, g, bb;
+    if (i < 22) { r = acc[0] * i / 22; g = acc[1] * i / 22; bb = acc[2] * i / 22; }
+    else { int f = (i - 22) * 256 / 9; r = acc[0] + ((255 - acc[0]) * f >> 8); g = acc[1] + ((255 - acc[1]) * f >> 8); bb = acc[2] + ((255 - acc[2]) * f >> 8); }
+    // keep some brightness in the shadows so the orb still reads
+    dd_out(DD_GREY + i, r + (10 + i * 3) * (255 - r) / 512, g + (10 + i * 3) * (255 - g) / 512, bb + (10 + i * 3) * (255 - bb) / 512);
+  }
+  // the darkest ember shades stay put so cycling never blacks the picture out
+  for (int i = 0; i < 12; i++) dd_out(DD_EMB + i, dd_eA[i][0], dd_eA[i][1], dd_eA[i][2]);
+  dd_cycleOut(dd_eA + 12, 52, DD_EMB + 12, cyc);
+  dd_cycleOut(dd_iA, DD_ICE_N, DD_ICE, cyc);
+  // colour wheel
+  int mode = dd_hueMode[w > 128 ? b : a];
+  for (int i = 0; i < 32; i++) {
+    int h = (i * 6 + hueOff) % 192, r, g, bb;
+    dd_hsvRGB(h, 255, &r, &g, &bb);
+    if (mode == 1) {                                             // two-tone: the scheme's two inks
+      const uint8_t* ink = h < 96 ? dd_eA[30] : dd_iA[12];
+      r = ink[0]; g = ink[1]; bb = ink[2];
+    } else if (mode == 2) {
+      int l = (h * 4) % 384; l = l > 191 ? 383 - l : l; l = 40 + l;
+      r = g = bb = l;
+    }
+    dd_out(DD_HUE + i, r, g, bb);
+    dd_out(DD_HUED + i, r * 100 >> 8, g * 100 >> 8, bb * 100 >> 8);
+  }
+  dd_out(255, 255, 255, 255);
 }
 
 // ─── Maths ────────────────────────────────────────────────────────────
@@ -134,6 +221,13 @@ static int dd_isqrt(int v) {
     one >>= 2;
   }
   return (int)res;
+}
+
+// fast distance: max + 3/8·min (within ~4%, no square root)
+static inline int dd_dist(int dx, int dy) {
+  if (dx < 0) dx = -dx;
+  if (dy < 0) dy = -dy;
+  return dx > dy ? dx + (dy * 3 >> 3) : dy + (dx * 3 >> 3);
 }
 
 // angle of (x, y), 0..1023 (rough but smooth)
@@ -161,20 +255,39 @@ static inline int dd_ping(int v, int n) {
 
 // ─── Drawing ──────────────────────────────────────────────────────────
 static uint8_t* dd_buf;
-static uint8_t dd_span[16][16];                // half-widths of small discs
+#define DD_SPAN 32
+static uint8_t dd_span[DD_SPAN][DD_SPAN];      // half-widths of discs up to r = 31
 static int dd_fringe = 0;                      // RGB edge offset (px)
 static int dd_burst = 0;                       // k12 blast, Q8 (0 = none)
 
 static void dd_disc(int cx, int cy, int r, uint8_t c) {
+  // tiny dots (the vast majority): write the bytes directly
+  if ((unsigned)(cx - 2) < (unsigned)(W - 4) && (unsigned)(cy - 2) < (unsigned)(H - 4) && r <= 2) {
+    uint8_t* p = dd_buf + cy * W + cx;
+    if (r <= 0) { *p = c; return; }
+    if (r == 1) {
+      p[-W - 1] = p[-W] = p[-W + 1] = c;
+      p[-1] = p[0] = p[1] = c;
+      p[W - 1] = p[W] = p[W + 1] = c;
+      return;
+    }
+    p[-2 * W - 1] = p[-2 * W] = p[-2 * W + 1] = c;
+    p[-W - 2] = p[-W - 1] = p[-W] = p[-W + 1] = p[-W + 2] = c;
+    p[-2] = p[-1] = p[0] = p[1] = p[2] = c;
+    p[W - 2] = p[W - 1] = p[W] = p[W + 1] = p[W + 2] = c;
+    p[2 * W - 1] = p[2 * W] = p[2 * W + 1] = c;
+    return;
+  }
   if (r <= 0) {
     if ((unsigned)cx < (unsigned)W && (unsigned)cy < (unsigned)H) dd_buf[cy * W + cx] = c;
     return;
   }
   if (cx + r < 0 || cx - r >= W || cy + r < 0 || cy - r >= H) return;
   int y0 = cy - r < 0 ? -cy : -r, y1 = cy + r >= H ? H - 1 - cy : r;
+  const uint8_t* sp = r < DD_SPAN ? dd_span[r] : NULL;
   for (int dy = y0; dy <= y1; dy++) {
     int ady = dy < 0 ? -dy : dy;
-    int hw = r < 16 ? dd_span[r][ady] : dd_isqrt(r * r + r - dy * dy);
+    int hw = sp ? sp[ady] : dd_isqrt(r * r + r - dy * dy);
     int x0 = cx - hw, x1 = cx + hw;
     if (x0 < 0) x0 = 0;
     if (x1 >= W) x1 = W - 1;
@@ -200,18 +313,22 @@ static void dd_dot(int x, int y, int r, uint8_t c) {
 static void dd_ball(int cx, int cy, int r, int lvl) {
   if (r < 1) { dd_disc(cx, cy, 0, (uint8_t)(DD_GREY + lvl)); return; }
   if (cx + r < 0 || cx - r >= W || cy + r < 0 || cy - r >= H) return;
-  int hx = cx - r / 3, hy = cy - r / 3, rr = r * r, k = 4 * rr;
+  int hx = cx - r / 3, hy = cy - r / 3, rr = r * r;
+  int inv = (26 << 16) / (4 * rr);                    // shading falloff, Q16 (no divide per pixel)
+  const uint8_t* sp = r < DD_SPAN ? dd_span[r] : NULL;
   for (int dy = -r; dy <= r; dy++) {
     int y = cy + dy;
     if ((unsigned)y >= (unsigned)H) continue;
-    int hw = r < 16 ? dd_span[r][dy < 0 ? -dy : dy] : dd_isqrt(rr + r - dy * dy);
+    int hw = sp ? sp[dy < 0 ? -dy : dy] : dd_isqrt(rr + r - dy * dy);
     int x0 = cx - hw < 0 ? 0 : cx - hw, x1 = cx + hw >= W ? W - 1 : cx + hw;
     uint8_t* row = dd_buf + y * W;
     int ddy = (y - hy) * (y - hy);
+    int ex = x0 - hx;
+    int d2 = ex * ex + ddy;                             // walk d² along the row: (e+1)² = e² + 2e + 1
     for (int x = x0; x <= x1; x++) {
-      int d2 = (x - hx) * (x - hx) + ddy;
-      int s = lvl - d2 * 26 / k;
+      int s = lvl - ((d2 * inv) >> 16);                 // d2·inv stays < ~2M, no overflow
       row[x] = (uint8_t)(DD_GREY + (s < 1 ? 1 : s));
+      d2 += 2 * ex + 1; ex++;
     }
   }
 }
@@ -260,30 +377,56 @@ static int dd_bgDots = 512;
 // dot radius for a given spacing (size knob: tiny … overlapping)
 static inline int dd_rad(int sp) { return (sp * (64 + dd_size * 3 / 4)) >> 10; }
 
+// colour wheel disc: hue by angle, darker toward the middle, black-red core.
+// rr2 = distance² from the centre, invR2 = (64 << 16) / R², ra = turn
+static inline uint8_t dd_wheel(int u, int v, int rr2, int invR2, int ra) {
+  int fr = (rr2 * invR2) >> 16;                                   // 0 … 63 across the disc
+  if (fr < 3) return (uint8_t)(DD_EMB + 6);
+  int hue = ((dd_atan2(v, u) + ra) >> 5) + dd_shift;
+  return (uint8_t)((fr < 22 ? DD_HUED : DD_HUE) + (hue & 31));
+}
+
 // ─── k0 Twin Discs ────────────────────────────────────────────────────
 static void dd_sceneDiscs() {
   int t = dd_t, sp = dd_sp;
   // cream dot grid, eaten away into black from the middle outwards
   int diss = dd_p7;
   int cols = W / sp + 1, rows = H / sp + 1;
-  int ccx = cols / 2, ccy = rows / 2, maxd = ccx * ccx + ccy * ccy;
+  if (cols > 110) cols = 110;
+  int ccx = cols / 2, ccy = rows / 2;
+  int kr = (767 << 16) / (ccx * ccx + ccy * ccy);                 // radial weight, Q16
   int dotR = dd_bgDots > 40 ? (sp * dd_bgDots >> 12) : -1;
-  for (int j = 0; j < rows; j++)
+  int colN[110], colR[110];                                       // per-column wave and distance
+  for (int i = 0; i < cols; i++) { colN[i] = dd_sin(i * 40 + t * 3); colR[i] = ((i - ccx) * (i - ccx) * kr) >> 10; }
+  uint8_t solid[110];
+  for (int j = 0; j < rows; j++) {
+    int rowN = dd_sin(j * 52 - t * 2), dy = j - ccy, rowR = (dy * dy * kr) >> 10;
     for (int i = 0; i < cols; i++) {
-      int n = (dd_sin(i * 40 + t * 3) + dd_sin(j * 52 - t * 2) + dd_sin(i * 23 + j * 31 + t * 5)) / 3;   // ±16384
-      int dx = i - ccx, dy = j - ccy;
-      int v = ((n + 16384) >> 6) + ((dx * dx + dy * dy) * 767 / maxd);            // 0 … ~1023
-      int x0 = i * sp, y0 = j * sp;
-      if (v >= diss) {
-        int x1 = x0 + sp > W ? W : x0 + sp;
-        for (int y = y0; y < y0 + sp && y < H; y++) memset(dd_buf + y * W + x0, DD_BG, x1 - x0);
-        if (dotR >= 0) dd_disc(x0 + sp / 2, y0 + sp / 2, dotR, DD_BGDOT);
-      } else if ((dd_hash(i, j, 3) & 7) == 0) {                                    // loose dots drifting
+      // (three waves)/3 → 0…1023, plus distance from the middle
+      int n3 = colN[i] + rowN + dd_sin(i * 23 + j * 31 + t * 5);
+      int v = ((n3 + 49152) * 21 >> 12) + ((colR[i] + rowR) >> 6);
+      solid[i] = v >= diss;
+    }
+    // fill each pixel row of this band in runs of solid cells (few big memsets)
+    int y0 = j * sp, y1 = y0 + sp > H ? H : y0 + sp;
+    for (int i = 0; i < cols; ) {
+      if (!solid[i]) { i++; continue; }
+      int i1 = i;
+      while (i1 < cols && solid[i1]) i1++;
+      int x0 = i * sp, x1 = i1 * sp > W ? W : i1 * sp;
+      for (int y = y0; y < y1; y++) memset(dd_buf + y * W + x0, DD_BG, x1 - x0);
+      i = i1;
+    }
+    for (int i = 0; i < cols; i++) {
+      int cx = i * sp + sp / 2, cy = y0 + sp / 2;
+      if (solid[i]) { if (dotR >= 0) dd_disc(cx, cy, dotR, DD_BGDOT); }
+      else if ((dd_hash(i, j, 3) & 7) == 0) {                                    // loose dots drifting
         uint32_t h = dd_hash(i, j, 4);
         int ox = dd_sin(t * 2 + (int)(h & 1023)) * sp >> 13, oy = dd_cos(t * 3 + (int)(h >> 10)) * sp >> 13;
-        dd_disc(x0 + sp / 2 + ox, y0 + sp / 2 + oy, dd_rad(sp) / 2 + 1, DD_BG);
+        dd_disc(cx + ox, cy + oy, dd_rad(sp) / 2 + 1, DD_BG);
       }
     }
+  }
 
   // the discs: one ember gradient on top, one colour wheel below
   int R = H * 33 / 100;
@@ -295,32 +438,46 @@ static void dd_sceneDiscs() {
   int cra = dd_cos(ra), sra = dd_sin(ra);
   int warp = dd_p4 * 40 >> 10;
   int g = sp, rb = dd_rad(sp);
+  int invR2 = (64 << 16) / (R * R), R2 = R * R, kS = (42 << 10) / (2 * R);
+  // per-column parts, worked out once and shared by every row
+  int nu = 0;
+  int su[64], uc[64];
+  for (int u = -R; u <= R && nu < 64; u += g, nu++) {
+    su[nu] = dd_sin(u * 6 + t * 4);
+    uc[nu] = u * cra;
+  }
   for (int d = 0; d < 2; d++) {
     int cyd = d ? R * 55 / 100 : -R * 55 / 100, czd = d ? -12 : 12;
-    for (int v = -R; v <= R; v += g)
-      for (int u = -R; u <= R; u += g) {
-        int rr2 = u * u + v * v;
-        if (rr2 > R * R) continue;
-        int w = warp * (dd_sin(u * 6 + t * 4) + dd_sin(v * 5 - t * 3)) >> 15;
-        int du = (warp / 3) * dd_sin(v * 9 + t * 5) >> 14;
-        int x = u + du, y = v + cyd, z = w + czd;
+    for (int v = -R; v <= R; v += g) {
+      // per-row parts
+      int umax = dd_isqrt(R2 - v * v);
+      int k0 = (R - umax + g - 1) / g;                             // first column inside the circle
+      int sv = dd_sin(v * 5 - t * 3);
+      int du = (warp / 3) * dd_sin(v * 9 + t * 5) >> 14;
+      int y = v + cyd, ycx = y * cax, ysx = y * sax;
+      int vs = v * sra, v2 = v * v;
+      for (int k = k0; k < nu; k++) {
+        int u = -R + k * g;
+        if (u > umax) break;
+        int w = warp * (su[k] + sv) >> 15;
+        int x = u + du, z = w + czd;
         int x1 = (x * cay + z * say) >> 14, z1 = (-x * say + z * cay) >> 14;
-        int y2 = (y * cax - z1 * sax) >> 14, z2 = (y * sax + z1 * cax) >> 14;
+        int y2 = (ycx - z1 * sax) >> 14, z2 = (ysx + z1 * cax) >> 14;
         int zc = D + z2;
         if (zc < 50) continue;
-        int sx = W / 2 + x1 * F / zc, sy = H / 2 + y2 * F / zc;
-        int r = rb * F / zc;
+        int fz = (F << 10) / zc;                                   // one divide per dot
+        int sx = W / 2 + (x1 * fz >> 10), sy = H / 2 + (y2 * fz >> 10);
+        int r = rb * fz >> 10;
         uint8_t c;
         if (d == 0) {
-          int s = (u * cra + v * sra) >> 14;                                          // −R … R
-          c = (uint8_t)(DD_EMB + dd_ping(18 + (s + R) * 42 / (2 * R) + dd_shift, 64));
+          int sgr = (uc[k] + vs) >> 14;                                               // −R … R
+          c = (uint8_t)(DD_EMB + dd_ping(18 + ((sgr + R) * kS >> 10) + dd_shift, 64));
         } else {
-          int hue = ((dd_atan2(v, u) + ra) >> 5) + dd_shift;
-          int fr = rr2 * 64 / (R * R);
-          c = fr < 3 ? (uint8_t)(DD_EMB + 6) : (uint8_t)((fr < 22 ? DD_HUED : DD_HUE) + (hue & 31));
+          c = dd_wheel(u, v, u * u + v2, invR2, ra);
         }
         dd_dot(sx, sy, r, c);
       }
+    }
   }
 }
 
@@ -417,29 +574,36 @@ static void dd_sceneFan() {
   int bands = 5 + (dd_p7 >> 7);
   int duty = (dd_p7 * m) >> 15;                                  // black stripes grow as it folds
   int cols = W / sp + 1, rows = H / sp + 1;
+  if (cols > 110) cols = 110;
   int rb = dd_rad(sp);
+  // per-column parts
+  int16_t cAu[110], cSin[110], cCos[110];
+  for (int i = 0; i < cols; i++) {
+    int uq = (i * 2048 / (cols - 1)) - 1024;                     // −1024 … 1024
+    int th = uq * spread >> 10;
+    cAu[i] = (int16_t)(uq < 0 ? -uq : uq);
+    cSin[i] = (int16_t)dd_sin(th);
+    cCos[i] = (int16_t)(dd_cos(th) * 13 / 10 > 32767 ? 32767 : dd_cos(th) * 13 / 10);
+  }
+  int ph0 = t * 6, xb0 = t * 5;
+  uint8_t orange = (uint8_t)(DD_ICE + dd_ping(49 + dd_shift, DD_ICE_N));
   for (int j = 0; j < rows; j++) {
+    // per-row parts
     int vq = j * 1023 / (rows - 1);                              // 0 top … 1023 bottom
+    int gy = j * sp + sp / 2;
+    int rho = (H * (280 + vq * 95 / 100) >> 10) * dd_zoom >> 8;
+    uint8_t c = (uint8_t)(DD_ICE + dd_ping(vq * (DD_ICE_N - 1) / 1023 + dd_shift, DD_ICE_N));
+    int r = rb * (600 + vq / 2) >> 10;
+    bool xband = m > 5000 && vq > 480;
+    int xoff = xb0 - (vq - 480) * 2;
     for (int i = 0; i < cols; i++) {
-      int uq = (i * 2048 / (cols - 1)) - 1024;                   // −1024 … 1024
-      int au = uq < 0 ? -uq : uq;
-      // flat grid → fan
-      int gx = i * sp + sp / 2, gy = j * sp + sp / 2;
-      int th = uq * spread >> 10;
-      int rho = (H * (280 + vq * 95 / 100) >> 10) * dd_zoom >> 8;
-      int fx = W / 2 + (dd_sin(th) * rho >> 14), fy = apexY + (dd_cos(th) * rho >> 14) * 13 / 10;
+      int au = cAu[i];
+      if (((au * bands + ph0) & 1023) < duty) continue;           // radial stripes, mirrored
+      int gx = i * sp + sp / 2;
+      int fx = W / 2 + (cSin[i] * rho >> 14), fy = apexY + (cCos[i] * rho >> 14);
       int x = gx + ((fx - gx) * m >> 14), y = gy + ((fy - gy) * m >> 14);
-      // radial stripes, mirrored left/right
-      int ph = (au * bands + t * 6) & 1023;
-      if (ph < duty) continue;
-      int ci = dd_ping(vq * (DD_ICE_N - 1) / 1023 + dd_shift, DD_ICE_N);
-      int r = rb * (600 + vq / 2) >> 10;
-      // orange X-bands low down once it has folded
-      if (m > 5000 && vq > 480) {
-        int xb = (au - (vq - 480) * 2 + t * 5) & 511;
-        if (xb < 70) { ci = dd_ping(49 + dd_shift, DD_ICE_N); r++; }
-      }
-      dd_dot(x, y, r, (uint8_t)(DD_ICE + ci));
+      if (xband && ((au + xoff) & 511) < 70) dd_dot(x, y, r + 1, orange);   // orange X-bands low down
+      else dd_dot(x, y, r, c);
     }
   }
 }
@@ -448,30 +612,40 @@ static void dd_sceneFan() {
 static void dd_sceneMoire() {
   int t = dd_t, sp = dd_sp + 1;
   int rb = dd_rad(sp);
-  // grid A: still
-  for (int y = sp / 2; y < H; y += sp)
-    for (int x = sp / 2; x < W; x += sp)
-      dd_dot(x, y, rb, (uint8_t)(DD_ICE + dd_ping(x * 30 / W + 4 + dd_shift, DD_ICE_N)));
-  // grid B: turning, breathing and lensed over the top
+  // grid A: still (colour by column, worked out once per column)
+  uint8_t colC[W / 4 + 2];
+  int nc = 0;
+  for (int x = sp / 2; x < W; x += sp) colC[nc++] = (uint8_t)(DD_ICE + dd_ping(x * 30 / W + 4 + dd_shift, DD_ICE_N));
+  for (int y = sp / 2; y < H; y += sp) {
+    int k = 0;
+    for (int x = sp / 2; x < W; x += sp) dd_dot(x, y, rb, colC[k++]);
+  }
+  // grid B: turning, breathing and lensed over the top. Positions are
+  // stepped (add a rotated step per dot) instead of rotated one by one.
   int a = (dd_sin(t) * (8 + (dd_p5 >> 4)) >> 14) + 3;
   int ca = dd_cos(a), sa = dd_sin(a);
   int sc = 1024 + (dd_p7 >> 3) + (dd_sin(t * 2) >> 9);           // scale Q10
   sc = sc * dd_zoom >> 8;
+  int step = sp * sc;                                             // one grid step, Q10 px
+  int ix = step * ca >> 14, iy = step * sa >> 14;                 // step along i (Q10)
+  int jx = -iy, jy = ix;                                          // step along j (Q10)
   int lens = dd_p4 * 14 >> 10;
-  int half = 210 / sp + 2;
-  for (int j = -half; j <= half; j++)
-    for (int i = -half; i <= half; i++) {
-      int x = i * sp * sc >> 10, y = j * sp * sc >> 10;
-      int rx = (x * ca - y * sa) >> 14, ry = (x * sa + y * ca) >> 14;
+  int half = (210 << 10) / (step > 256 ? step : 256) + 2;
+  for (int j = -half; j <= half; j++) {
+    uint8_t c = (uint8_t)(DD_EMB + dd_ping(30 + (j + half) * 30 / (2 * half) + dd_shift, 64));
+    int px = -half * ix + j * jx, py = -half * iy + j * jy;       // Q10, relative to the centre
+    for (int i = -half; i <= half; i++, px += ix, py += iy) {
+      int rx = px >> 10, ry = py >> 10;
       if (lens) {
-        int d = dd_isqrt(rx * rx + ry * ry);
+        int d = dd_dist(rx, ry);
         int push = lens * dd_sin(d * 12 - t * 6) >> 14;
         if (d > 0) { rx += rx * push / d; ry += ry * push / d; }
       }
       int sx = W / 2 + rx, sy = H / 2 + ry;
-      if (sx < -8 || sx > W + 8 || sy < -8 || sy > H + 8) continue;
-      dd_dot(sx, sy, rb, (uint8_t)(DD_EMB + dd_ping(30 + (j + half) * 30 / (2 * half) + dd_shift, 64)));
+      if ((unsigned)(sx + 8) > (unsigned)(W + 16) || (unsigned)(sy + 8) > (unsigned)(H + 16)) continue;
+      dd_dot(sx, sy, rb, c);
     }
+  }
 }
 
 // ─── k4 Dot Sea ───────────────────────────────────────────────────────
@@ -485,21 +659,26 @@ static void dd_sceneSea() {
   int off = move % dz;
   int dx = 12 + dd_sp * 2;
   int roll = dd_sin(t) * (dd_p5 >> 5) >> 14;                     // camera banking
+  int kC = ((DD_ICE_N - 1) << 10) / (2 * amp);
   for (int k = NR - 1; k >= 0; k--) {
     int z = 60 + k * dz - off;
     if (z < 30) continue;
+    bool far = z > dz * NR * 3 / 4;
+    int fz = (F << 10) / z;                                     // perspective, once per row (Q10)
     int zw = (z + move) / 2;
-    int halfW = (W / 2 + 20) * z / F;
+    int sz = dd_sin(zw * 2 - t * 4);                             // the along-the-sea wave, once per row
+    int halfW = ((W / 2 + 20) << 10) / fz;
     int j0 = -(halfW / dx) - 1;
-    int rw = (8 + dd_size / 60) * F / z;
+    int rw = ((8 + dd_size / 60) * fz >> 10) >> 2;
+    int base = hor + ((camY + lift) * fz >> 10);
     for (int j = j0; j <= -j0; j++) {
+      if (far && (dd_hash(j, k, 1) & 1)) continue;             // thin out far off
       int xw = j * dx;
-      int h = amp * (dd_sin(xw * 3 + t * 3) + dd_sin(zw * 2 - t * 4) + dd_sin((xw + zw) * 3 / 2 + t)) / 49152;
-      int sx = W / 2 + xw * F / z;
-      int sy = hor + (camY + lift - h) * F / z + (roll * (sx - W / 2) >> 8);
-      int ci = dd_ping((h + amp) * (DD_ICE_N - 1) / (2 * amp) + dd_shift, DD_ICE_N);
-      if (z > dz * NR * 3 / 4 && (dd_hash(j, k, 1) & 1)) continue;   // thin out far off
-      dd_dot(sx, sy, rw >> 2, (uint8_t)(DD_ICE + ci));
+      int h = (amp * (dd_sin(xw * 3 + t * 3) + sz + dd_sin((xw + zw) * 3 / 2 + t)) * 21) >> 20;
+      int sx = W / 2 + (xw * fz >> 10);
+      int sy = base - (h * fz >> 10) + (roll * (sx - W / 2) >> 8);
+      int ci = dd_ping((((h + amp) * kC) >> 10) + dd_shift, DD_ICE_N);
+      dd_dot(sx, sy, rw, (uint8_t)(DD_ICE + ci));
     }
   }
 }
@@ -513,20 +692,23 @@ static void dd_sceneTunnel() {
   int nd = 20 + dd_sp * 3;                                        // dots per ring (density)
   int twist = dd_p4 >> 4;
   int curve = 20 + (dd_p7 >> 3);
+  int stepA = (1024 << 8) / nd;                                 // angle step, Q8
   for (int k = NRg - 1; k >= 0; k--) {
-    int z = ((k * gap - move) % per + per) % per + 30;
-    int ringId = (k * gap - move) >= 0 ? (k * gap - move) / per : ((k * gap - move) - per + 1) / per;
-    int ring = k + ringId * NRg;
+    int zz = k * gap - move;
+    int z = (zz % per + per) % per + 30;
+    int ring = k + (zz >= 0 ? zz / per : (zz - per + 1) / per) * NRg;
+    int fz = (F << 10) / z;                                     // perspective, once per ring (Q10)
     int cx = dd_sin(z / 2 + t * 2) * curve >> 12, cy = dd_cos(z / 3 + t) * curve >> 13;
     int rot = z * twist / 16 + t * 2;
-    int rw = (6 + dd_size / 70) * F / z;
+    int rw = ((6 + dd_size / 70) * fz >> 10) / 3;
     uint8_t base = z > per / 2 ? DD_HUED : DD_HUE;
     int hue = (ring * 3 + dd_shift) & 31;
+    uint8_t c0 = (uint8_t)(base + hue), c1 = (uint8_t)(base + ((hue + 2) & 31));
+    int ocx = W / 2 + (cx * fz >> 10), ocy = H / 2 + (cy * fz >> 10);
+    int R = 150 * fz >> 10;                                     // ring radius on screen
     for (int i = 0; i < nd; i++) {
-      int a = i * 1024 / nd + rot;
-      int x = cx + (dd_cos(a) * 150 >> 14), y = cy + (dd_sin(a) * 150 >> 14);
-      int sx = W / 2 + x * F / z, sy = H / 2 + y * F / z;
-      dd_dot(sx, sy, rw / 3, (uint8_t)(base + ((hue + (i & 1) * 2) & 31)));
+      int a = rot + (i * stepA >> 8);
+      dd_dot(ocx + (dd_cos(a) * R >> 14), ocy + (dd_sin(a) * R >> 14), rw, (i & 1) ? c1 : c0);
     }
   }
 }
@@ -539,33 +721,35 @@ static void dd_sceneBumper() {
   int Rb = (H * (12 + (dd_p4 >> 5)) / 100) * dd_zoom >> 8;
   int Rb2 = Rb * Rb;
   int rb = dd_rad(sp);
-  int R = H * 42 / 100, R2 = R * R;
+  int R = H * 42 / 100, R2 = R * R, invR2 = (64 << 16) / R2;
   int scat = dd_p7 * sp * 3 >> 10;
   int ra = t * (1 + (dd_p5 >> 8));
-  for (int y = sp / 2; y < H; y += sp)
+  int invRb = Rb > 0 ? (1 << 16) / Rb : 0;
+  uint8_t outer = (uint8_t)(DD_EMB + dd_ping(50 + dd_shift, 64));
+  for (int y = sp / 2; y < H; y += sp) {
+    int v = y - H / 2, v2 = v * v;
     for (int x = sp / 2; x < W; x += sp) {
-      int u = x - W / 2, v = y - H / 2, rr2 = u * u + v * v;
-      uint8_t c;
-      if (rr2 < R2) {
-        int fr = rr2 * 64 / R2;
-        int hue = ((dd_atan2(v, u) + ra) >> 5) + dd_shift;
-        c = fr < 4 ? (uint8_t)(DD_EMB + 8) : (uint8_t)((fr < 24 ? DD_HUED : DD_HUE) + (hue & 31));
-      } else c = (uint8_t)(DD_EMB + dd_ping(50 + dd_shift, 64));
+      int u = x - W / 2, rr2 = u * u + v2;
+      uint8_t c = rr2 < R2 ? dd_wheel(u, v, rr2, invR2, ra) : outer;
       int px = x, py = y, r = rb;
       if (scat) {
         uint32_t h = dd_hash(x, y, 9);
         px += dd_sin(t * 2 + (int)(h & 1023)) * scat >> 14;
         py += dd_cos(t * 3 + (int)((h >> 10) & 1023)) * scat >> 14;
       }
-      int ddx = px - bx, ddy = py - by, d2 = ddx * ddx + ddy * ddy;
-      if (d2 < Rb2) {
-        int d = dd_isqrt(d2);
-        int push = (Rb2 - d2) / (Rb > 0 ? Rb : 1);               // 0 … Rb
-        if (d > 0) { px += ddx * push / d; py += ddy * push / d; }
-        r += push * rb / (Rb > 0 ? Rb : 1) + (push > Rb / 2 ? 1 : 0);
+      int ddx = px - bx, ddy = py - by;
+      if ((unsigned)(ddx + Rb) < (unsigned)(2 * Rb) && (unsigned)(ddy + Rb) < (unsigned)(2 * Rb)) {
+        int d2 = ddx * ddx + ddy * ddy;
+        if (d2 < Rb2) {                                         // inside the ball's reach: shove it aside
+          int d = dd_dist(ddx, ddy);
+          int push = (Rb2 - d2) * invRb >> 16;                  // 0 … Rb
+          if (d > 0) { px += ddx * push / d; py += ddy * push / d; }
+          r += (push * rb * invRb >> 16) + (push > Rb / 2 ? 1 : 0);
+        }
       }
       dd_dot(px, py, r, c);
     }
+  }
   dd_ball(bx, by, Rb * 55 / 100, 31);
 }
 
@@ -579,21 +763,23 @@ static void dd_sceneHalftone() {
   int con = 256 + dd_p7 * 3 / 2;                                 // contrast Q8
   int maxr = (sp * (400 + dd_size) >> 11) * dd_zoom >> 8;
   int half = 210 / sp + 2;
-  for (int j = -half; j <= half; j++)
-    for (int i = -half; i <= half; i++) {
-      int gx = i * sp, gy = j * sp;
-      int x = W / 2 + ((gx * ca - gy * sa) >> 14), y = H / 2 + ((gx * sa + gy * ca) >> 14);
-      if (x < -sp || x > W + sp || y < -sp || y > H + sp) continue;
-      int d = dd_isqrt((x - mx) * (x - mx) + (y - my) * (y - my));
-      int s = dd_sin(x * fq + t * 3) + dd_sin(y * fq * 5 / 4 - t * 2) + dd_sin((x + y) * fq / 2 + t) + dd_sin(d * fq * 2 - t * 4);
+  int ix = sp * ca, iy = sp * sa;                                // step along i (Q14)
+  for (int j = -half; j <= half; j++) {
+    int px = -half * ix - j * iy, py = -half * iy + j * ix;       // Q14, relative to the centre
+    for (int i = -half; i <= half; i++, px += ix, py += iy) {
+      int x = W / 2 + (px >> 14), y = H / 2 + (py >> 14);
+      if ((unsigned)(x + sp) > (unsigned)(W + 2 * sp) || (unsigned)(y + sp) > (unsigned)(H + 2 * sp)) continue;
+      int d = dd_dist(x - mx, y - my);
+      int s = dd_sin(x * fq + t * 3) + dd_sin((y * fq * 5 >> 2) - t * 2) + dd_sin(((x + y) * fq >> 1) + t) + dd_sin(d * fq * 2 - t * 4);
       int v = (s + 65536) >> 7;                                   // 0 … 1023
       v = 512 + ((v - 512) * con >> 8);
       if (v < 0) v = 0;
       if (v > 1023) v = 1023;
       int r = v * maxr >> 10;
       if (r <= 0 && v < 200) continue;
-      dd_dot(x, y, r, (uint8_t)(DD_EMB + dd_ping(8 + v * 55 / 1023 + dd_shift, 64)));
+      dd_dot(x, y, r, (uint8_t)(DD_EMB + dd_ping(8 + (v * 55 >> 10) + dd_shift, 64)));
     }
+  }
 }
 
 // ─── Mirror (post) ────────────────────────────────────────────────────
@@ -621,8 +807,9 @@ const char* prog_dispatch_presetName(int preset) {
   return NULL;
 }
 
-static const char* const dd_labels[12] = {
-  "Palette", "Speed", "Dot Size", "Density", "", "Spin", "Zoom", "", "Color Shift", "Fringe", "Mirror", "BG Dots"
+static const char* const dd_labels[16] = {
+  "Palette", "Speed", "Dot Size", "Density", "", "Spin", "Zoom", "", "Color Shift", "Fringe", "Mirror", "BG Dots",
+  "Color Cycle", "Pop", "Morph", ""
 };
 static const char* const dd_p4Labels[DD_NUM_PRESETS] = { "Ripple", "Wobble", "Fold", "Lens", "Waves", "Twist", "Bump", "Plasma" };
 static const char* const dd_p7Labels[DD_NUM_PRESETS] = { "Dissolve", "Fly-Thru", "Stripes", "Offset", "Height", "Curve", "Scatter", "Contrast" };
@@ -631,7 +818,7 @@ const char* prog_dispatch_potLabel(int preset, int pot) {
   int p = (preset >= 0 && preset < DD_NUM_PRESETS) ? preset : 0;
   if (pot == 4) return dd_p4Labels[p];
   if (pot == 7) return dd_p7Labels[p];
-  if (pot >= 0 && pot < 12) return dd_labels[pot];
+  if (pot >= 0 && pot < 16) return dd_labels[pot];
   return "";
 }
 
@@ -641,13 +828,12 @@ uint8_t prog_dispatch_renderHint(int preset) {
 }
 
 void prog_dispatch_init() {
-  dd_palKey = -1;
   static bool ready = false;
   if (ready) return;
   ready = true;
   for (int i = 0; i < 1024; i++) dd_sinT[i] = (int16_t)lroundf(sinf(i * 6.2831853f / 1024.0f) * 16384.0f);
-  for (int r = 0; r < 16; r++)
-    for (int d = 0; d < 16; d++) {
+  for (int r = 0; r < DD_SPAN; r++)
+    for (int d = 0; d < DD_SPAN; d++) {
       float q = (r + 0.5f) * (r + 0.5f) - (float)(d * d);
       dd_span[r][d] = (uint8_t)(q > 0 ? (int)sqrtf(q) : 0);
     }
@@ -670,10 +856,6 @@ void prog_dispatch_draw(int preset) {
   lastMs = now;
   if (dt <= 0 || dt > 0.1f) dt = 0.016f;
   dd_smooth(dt);
-
-  static const uint8_t order[5] = {3, 1, 0, 2, 4};              // knob centre = original colours
-  int sPos = dd_k(0) * 5 / 1024;
-  dd_buildPalette(order[sPos > 4 ? 4 : sPos]);
 
   float sk = dd_sm[1] / 1023.0f;
   float speed = (sk < 0.03f) ? 0.0f : 0.25f * powf(12.0f, (sk - 0.03f) / 0.97f);
@@ -703,6 +885,33 @@ void prog_dispatch_draw(int preset) {
   if (burstF > 0) burstF = burstF * 15 / 16 - 1;
   if (burstF < 0) burstF = 0;
   dd_burst = burstF;
+
+  // ── colours ── p0 scheme (centre = Dispatch), p12 Color Cycle,
+  // p13 Pop (contrast), p14 Morph (sways toward the next scheme).
+  // The colour clock runs in real time, so colours keep moving even
+  // when Speed is frozen.
+  static const uint8_t order[DD_NSCHEME] = {7, 6, 4, 2, 0, 1, 3, 5};   // knob: Mono … Dispatch (centre) … Liquid Light
+  int pos = dd_k(0) * DD_NSCHEME / 1024;
+  if (pos > DD_NSCHEME - 1) pos = DD_NSCHEME - 1;
+  int sA = order[pos], sB = order[(pos + 1) % DD_NSCHEME];
+  float cy = dd_sm[12] / 1023.0f;
+  static float cycF = 0, hueF = 0, morF = 0;
+  cycF += dt * cy * cy * 40.0f * 256.0f;                         // up to 40 ramp steps a second
+  hueF += dt * cy * cy * 120.0f;                                 // colour wheel turning
+  morF += dt * (0.05f + cy * 0.4f);                              // morph sway (cycles/s)
+  if (cycF > 1.0e6f) cycF = 0;
+  if (hueF > 1.0e6f) hueF = 0;
+  if (morF > 1.0e6f) morF = 0;
+  int mor = dd_k(14);
+  int w = 0;
+  if (mor > 20) {
+    float ph = morF - (int)morF;                                  // 0 … 1, triangle then smoothed
+    float tri = ph < 0.5f ? ph * 2 : 2 - ph * 2;
+    tri = tri * tri * (3 - 2 * tri);
+    w = (int)(tri * mor / 4);                                     // 0 … 255
+  }
+  dd_flash = burstF > 215;                                        // the first frames of a blast
+  dd_buildPalette(sA, sB, w, (int)cycF, ((int)hueF) % 192, dd_k(13));
 
   memset(dd_buf, 0, W * H);
   switch (preset) {
