@@ -18,7 +18,10 @@
 //   k6 Solo        — one big double pendulum with a long colour-changing trail
 //   k7 Chandelier  — three crowns stacked, different sizes
 //
-//   k12 — RELAUNCH: everything back in step, ready to fall apart again
+//   It LOOPS: the crown falls into chaos, eases to a stop, then time runs
+//   backwards — every pendulum retraces its path exactly and the crown
+//   re-forms, at rest — and it falls again. Seamless, forever.
+//   k12 — REVERSE TIME now (eases to a stop first; press again to go forward)
 //   Shift + k12 — floor reflection on / off (a glossy black floor under the crown)
 //
 // Knobs (this program owns the global knobs and makes its own colours):
@@ -27,15 +30,17 @@
 //   p4 Start Angle   p5 Arm Ratio (2nd arm length)   p6 Trails
 //   p7 Rods (brightness, far left = hidden)   p8 Spin (centre = still)
 //   p9 Tilt   p10 Zoom (0.35× … 4×, zooms round the panned spot)
-//   p11 Relaunch (seconds, far right = never)
+//   p11 Loop Length (4 … 60 simulated seconds of falling before it rewinds,
+//       centre ≈ 16 s; far right = never rewind). Start Angle, Spread and Arm
+//       Ratio changes take effect at the next crown (the loop's seam).
 //   p12 Pan X (right = look right)   p14 Pan Y (right = look up)
 //   p13 Color: left of centre = DRIFT colour (pendulums stay white while in
 //       step and light up in colour as they drift apart — the chaos spreading
 //       round the ring); centre = plain rainbow; right of centre = colour cycle
 //   p15 Bobs (size and glow together)
 //
-// How it works: each pendulum's two angles and speeds are integrated with
-// the standard double-pendulum equations (midpoint method, small steps).
+// How it works: each pendulum is two bobs on stiff rods, stepped with an
+// integer Verlet rule that is exactly reversible (see Physics below).
 // Positions are turned into 3D (each pendulum's plane rotated round the
 // vertical axis), spun and tilted by the camera, and drawn in perspective.
 // Every pixel stores (brightness << 4) | hue; brighter wins, and a quick
@@ -43,7 +48,8 @@
 // =====================================================================
 
 // ─── Maths ────────────────────────────────────────────────────────────
-static int16_t cb_sinT[512];                     // Q14 sine, 512 steps per turn (blended, so still smooth)
+#include "vg_sin.h"
+#define cb_sinT vg_sin512                        // shared sine table (in flash: no RAM)
 #define CB_TWO_PI 6.28318531f
 #define CB_PI     3.14159265f
 
@@ -165,74 +171,55 @@ static void cb_fade(int dec) {
   for (int i = 0; i < W * H / 4; i++) b[i] = cb_fade4(b[i], d4);
 }
 
-// ─── Physics (whole-number maths: the RP2040 has no floating-point unit) ──
-// Angles, speeds and lengths are fixed-point "Q16" numbers: 65536 = 1.0
-// (radians, radians per second, pendulum lengths). That is several times
-// quicker on the board than float maths and plenty precise.
+// ─── Physics: exactly reversible, so the animation can loop ───────────
+// Each pendulum lives in its own vertical plane: two bobs (mass 1) on two
+// very stiff rods (springs), pulled by gravity. Positions are whole numbers
+// (Q24: 16777216 = one arm length) and are stepped with the integer
+// Verlet rule   next = 2·now − before + round(h²·force(now)).
+// That rule is perfectly symmetric in time: swap "before" and "now" and it
+// retraces its path back to the start, bit for bit — the chaos un-mixes and
+// the crown re-forms exactly. Starting from rest, t = 0 is a natural mirror,
+// so forward → rewind → forward is one seamless loop.
 #define CB_MAXN 64
-#define CB_ONE  65536
-#define CB_PIQ  205887                           // π in Q16
-#define CB_2PIQ 411775
-static int32_t cb_t1[CB_MAXN], cb_t2[CB_MAXN], cb_w1[CB_MAXN], cb_w2[CB_MAXN];
+#define CB_Q    16777216                         // 1.0 in Q24
+#define CB_HZ   512                              // physics steps per simulated second
+#define CB_G    628                              // h²·g in Q24 (9.81 / 512²)
+#define CB_KS   0.1717f                          // h²·k/2 (rod stiffness k = 90000)
+static int32_t cb_x1[CB_MAXN], cb_y1[CB_MAXN], cb_x2[CB_MAXN], cb_y2[CB_MAXN];   // now
+static int32_t cb_vx1[CB_MAXN], cb_vy1[CB_MAXN], cb_vx2[CB_MAXN], cb_vy2[CB_MAXN]; // now − before
 static uint8_t cb_drift[CB_MAXN];                // how far each one has drifted from its neighbour (0..255)
 #define CB_HIST 4
 static int16_t cb_hx[CB_MAXN][CB_HIST], cb_hy[CB_MAXN][CB_HIST];   // last few outer-bob positions (newest first)
 static int cb_n = 50;
-static float cb_L1 = 1.0f, cb_L2 = 1.0f;         // float copies for drawing
-static int32_t cb_qL1 = CB_ONE, cb_qL2 = CB_ONE, cb_qiL1 = CB_ONE, cb_qiL2 = CB_ONE, cb_qm2 = CB_ONE;
+static float cb_L1 = 1.0f, cb_L2 = 1.0f;         // arm lengths this loop was launched with
+static int64_t cb_LL1 = (int64_t)CB_Q * CB_Q, cb_LL2 = (int64_t)CB_Q * CB_Q;   // L² in Q48
+static int32_t cb_c1 = 0, cb_c2 = 0;             // h²·k/(2L²) in Q24
 static bool cb_fresh = true;                     // no previous trail point yet
 
-static inline int32_t cb_mul(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 16); }
-static inline int32_t cb_wrapq(int32_t a) {      // keep angles in −π … π
-  while (a > CB_PIQ) a -= CB_2PIQ;
-  while (a < -CB_PIQ) a += CB_2PIQ;
-  return a;
-}
-// sine of a Q16 angle → Q16 (512-step table, blended)
-static inline int32_t cb_sinq(int32_t a) {
-  int64_t fi = ((int64_t)a * 5340354) >> 16;     // table position in 1/65536 steps (512 / 2π)
-  int32_t i = (int32_t)(fi >> 16), fr = (int32_t)(fi & 0xFFFF);
-  int32_t s0 = cb_sinT[i & 511], s1 = cb_sinT[(i + 1) & 511];
-  return (s0 + (((s1 - s0) * fr) >> 16)) * 4;
-}
-static inline int32_t cb_cosq(int32_t a) { return cb_sinq(a + (CB_PIQ >> 1)); }
+static inline int32_t cb_rq(int64_t v) { return (int32_t)((v + (1LL << 23)) >> 24); }   // Q48 → Q24, rounded
 
-// angular accelerations of a double pendulum (m1 = 1, g = 9.81)
-static inline void cb_acc(int32_t t1, int32_t t2, int32_t w1, int32_t w2, int32_t* a1, int32_t* a2) {
-  const int32_t g = 642908, m1 = CB_ONE;          // 9.81, 1.0
-  int32_t s1 = cb_sinq(t1), c1 = cb_cosq(t1), s2 = cb_sinq(t2), c2 = cb_cosq(t2);
-  int32_t sd = cb_mul(s1, c2) - cb_mul(c1, s2), cd = cb_mul(c1, c2) + cb_mul(s1, s2);   // sin, cos (t1 − t2)
-  int32_t s12 = cb_mul(s1, cb_mul(c2, c2) - cb_mul(s2, s2)) - cb_mul(c1, 2 * cb_mul(s2, c2));   // sin(t1 − 2·t2)
-  int32_t m2 = cb_qm2, M = m1 + m2;
-  int32_t den = 2 * m1 + m2 - cb_mul(m2, 2 * cb_mul(cd, cd) - CB_ONE);   // ≥ 2 with m1 = 1
-  if (den < CB_ONE / 4) den = CB_ONE / 4;
-  int32_t inv = (int32_t)((0x80000000u / (uint32_t)den) << 1);         // 1/den in Q16
-  int32_t w1s = cb_mul(w1, w1), w2s = cb_mul(w2, w2);
-  int32_t n1 = -cb_mul(cb_mul(g, 2 * m1 + m2), s1) - cb_mul(cb_mul(m2, g), s12)
-               - cb_mul(cb_mul(2 * sd, m2), cb_mul(w2s, cb_qL2) + cb_mul(cb_mul(w1s, cb_qL1), cd));
-  int32_t n2 = cb_mul(2 * sd, cb_mul(cb_mul(w1s, cb_qL1), M) + cb_mul(cb_mul(g, M), c1)
-               + cb_mul(cb_mul(cb_mul(w2s, cb_qL2), m2), cd));
-  *a1 = cb_mul(cb_mul(n1, inv), cb_qiL1);
-  *a2 = cb_mul(cb_mul(n2, inv), cb_qiL2);
-}
-
-// advance every pendulum by h (Q16 seconds), midpoint method
-static void cb_step(int32_t h) {
-  const int32_t WMAX = 40 * CB_ONE;
-  int32_t hh = h >> 1;
+// one Verlet step for every pendulum
+static void cb_step() {
   for (int i = 0; i < cb_n; i++) {
-    int32_t t1 = cb_t1[i], t2 = cb_t2[i], w1 = cb_w1[i], w2 = cb_w2[i];
-    int32_t a1, a2;
-    cb_acc(t1, t2, w1, w2, &a1, &a2);
-    int32_t mt1 = t1 + cb_mul(w1, hh), mt2 = t2 + cb_mul(w2, hh);
-    int32_t mw1 = w1 + cb_mul(a1, hh), mw2 = w2 + cb_mul(a2, hh);
-    cb_acc(mt1, mt2, mw1, mw2, &a1, &a2);
-    w1 += cb_mul(a1, h); w2 += cb_mul(a2, h);
-    if (w1 > WMAX) w1 = WMAX; else if (w1 < -WMAX) w1 = -WMAX;   // safety
-    if (w2 > WMAX) w2 = WMAX; else if (w2 < -WMAX) w2 = -WMAX;
-    cb_t1[i] = cb_wrapq(t1 + cb_mul(mw1, h));
-    cb_t2[i] = cb_wrapq(t2 + cb_mul(mw2, h));
-    cb_w1[i] = w1; cb_w2[i] = w2;
+    int32_t x1 = cb_x1[i], y1 = cb_y1[i], x2 = cb_x2[i], y2 = cb_y2[i];
+    int32_t dx = x2 - x1, dy = y2 - y1;
+    // rod 1 (pivot → bob 1) and rod 2 (bob 1 → bob 2): pull = c·(len² − L²)·direction
+    int32_t e1 = cb_rq((int64_t)x1 * x1 + (int64_t)y1 * y1 - cb_LL1);
+    int32_t e2 = cb_rq((int64_t)dx * dx + (int64_t)dy * dy - cb_LL2);
+    int32_t f1 = cb_rq((int64_t)e1 * cb_c1), f2 = cb_rq((int64_t)e2 * cb_c2);
+    int32_t ax2 = -cb_rq((int64_t)f2 * dx), ay2 = -cb_rq((int64_t)f2 * dy);
+    int32_t ax1 = -cb_rq((int64_t)f1 * x1) - ax2, ay1 = -cb_rq((int64_t)f1 * y1) - ay2;
+    cb_vx1[i] += ax1; cb_vy1[i] += ay1 - CB_G;
+    cb_vx2[i] += ax2; cb_vy2[i] += ay2 - CB_G;
+    cb_x1[i] = x1 + cb_vx1[i]; cb_y1[i] = y1 + cb_vy1[i];
+    cb_x2[i] = x2 + cb_vx2[i]; cb_y2[i] = y2 + cb_vy2[i];
+  }
+}
+// turn time round: "before" and "now" swap places
+static void cb_reverse() {
+  for (int i = 0; i < cb_n; i++) {
+    cb_x1[i] -= cb_vx1[i]; cb_y1[i] -= cb_vy1[i]; cb_x2[i] -= cb_vx2[i]; cb_y2[i] -= cb_vy2[i];
+    cb_vx1[i] = -cb_vx1[i]; cb_vy1[i] = -cb_vy1[i]; cb_vx2[i] = -cb_vx2[i]; cb_vy2[i] = -cb_vy2[i];
   }
 }
 
@@ -240,20 +227,27 @@ static void cb_step(int32_t h) {
 static void cb_measureDrift() {
   for (int i = 0; i < cb_n; i++) {
     int j = i > 0 ? i - 1 : cb_n - 1;
-    int32_t d = abs(cb_wrapq(cb_t1[i] - cb_t1[j])) + abs(cb_wrapq(cb_t2[i] - cb_t2[j]));
-    int v = (int)(d >> 9);                       // ~0.5 rad apart → 64; 2 rad → 255
+    uint32_t d = (uint32_t)abs(cb_x1[i] - cb_x1[j]) + (uint32_t)abs(cb_y1[i] - cb_y1[j])
+               + (uint32_t)abs(cb_x2[i] - cb_x2[j]) + (uint32_t)abs(cb_y2[i] - cb_y2[j]);
+    int v = (int)(d >> 18);                      // ~0.5 rad apart → 64
     if (v > 255) v = 255;
     cb_drift[i] = (uint8_t)((cb_drift[i] * 7 + v) >> 3);
   }
 }
 
-// everyone back in step: start angle a0, each one `spread` radians apart
-static void cb_launch(int n, float a0, float spread) {
+// everyone in step and at rest: start angle a0, each one `spread` radians apart
+static void cb_launch(int n, float a0, float spread, float L2) {
   cb_n = n;
+  cb_L1 = 1.0f; cb_L2 = L2;
+  int32_t q1 = CB_Q, q2 = (int32_t)(L2 * CB_Q);
+  cb_LL1 = (int64_t)q1 * q1; cb_LL2 = (int64_t)q2 * q2;
+  cb_c1 = (int32_t)(CB_KS * CB_Q); cb_c2 = (int32_t)(CB_KS / (L2 * L2) * CB_Q);
   for (int i = 0; i < n; i++) {
     float a = a0 + spread * (float)i;
-    cb_t1[i] = cb_wrapq((int32_t)(a * 65536.0f)); cb_t2[i] = cb_t1[i];
-    cb_w1[i] = 0; cb_w2[i] = 0;
+    float sa = sinf(a), ca = cosf(a);
+    cb_x1[i] = (int32_t)lroundf(sa * CB_Q);  cb_y1[i] = (int32_t)lroundf(-ca * CB_Q);
+    cb_x2[i] = cb_x1[i] + (int32_t)lroundf(sa * q2); cb_y2[i] = cb_y1[i] - (int32_t)lroundf(ca * q2);
+    cb_vx1[i] = cb_vy1[i] = cb_vx2[i] = cb_vy2[i] = 0;
     cb_drift[i] = 0;
   }
   cb_fresh = true;
@@ -333,7 +327,7 @@ const char* prog_chaos_presetName(int preset) {
 
 static const char* const cb_labels[16] = {
   "Palette", "Speed", "Count", "Spread", "Start Angle", "Arm Ratio", "Trails", "Rods",
-  "Spin", "Tilt", "Zoom", "Relaunch", "Pan X", "Color", "Pan Y", "Bobs"
+  "Spin", "Tilt", "Zoom", "Loop Length", "Pan X", "Color", "Pan Y", "Bobs"
 };
 const char* prog_chaos_potLabel(int preset, int pot) {
   (void)preset;
@@ -352,7 +346,6 @@ void prog_chaos_init() {
   static bool ready = false;
   if (!ready) {
     ready = true;
-    for (int i = 0; i < 512; i++) cb_sinT[i] = (int16_t)lroundf(sinf(i * CB_TWO_PI / 512.0f) * 16384.0f);
   }
   cb_lastPreset = -1;                            // relaunch on the first frame
   cb_liveN = 0;
@@ -360,7 +353,6 @@ void prog_chaos_init() {
 }
 
 void prog_chaos_draw(int preset) {
-  if (cb_sinT[128] == 0) prog_chaos_init();
   cb_buf = display.getBuffer();
   if (!cb_buf) return;
   if (preset < 0 || preset >= CB_NUM_PRESETS) preset = 0;
@@ -388,17 +380,14 @@ void prog_chaos_draw(int preset) {
   if (count > CB_MAXN) count = CB_MAXN;
   float spreadDeg = 0.1f * powf(10.0f, (cb_k(3) - 512) / 256.0f);                // 0.001° … 10°, centre 0.1°
   float a0 = (20.0f + cb_k(4) * 160.0f / 1023.0f) * (CB_PI / 180.0f);           // 20° … 180°, centre 100°
-  cb_L1 = 1.0f;
-  cb_L2 = 0.4f + cb_k(5) * 1.2f / 1023.0f;                                       // 0.4 … 1.6, centre 1.0
-  cb_qm2 = CB_ONE;                                                              // equal weights
+  float armK = 0.4f + cb_k(5) * 1.2f / 1023.0f;                                  // 0.4 … 1.6, centre 1.0
   int trails = cb_k(6);
   int rods = cb_k(7) * 9 / 1023;                                                 // 0 = hidden … 9
   int bk = cb_k(15);                                                             // Bobs: size, then glow
   int bobR = 1 + bk * 3 / 1024;                                                  // 1 … 3
   int glow = bk < 300 ? 0 : (bk - 300) * 7 / 724;                                // glow comes in past ~30 %
-  cb_qL1 = (int32_t)(cb_L1 * 65536.0f); cb_qL2 = (int32_t)(cb_L2 * 65536.0f);
-  cb_qiL1 = (int32_t)(65536.0f / cb_L1); cb_qiL2 = (int32_t)(65536.0f / cb_L2);
-  float relSec = cb_k(11) > 990 ? 0.0f : 6.0f + cb_k(11) * 54.0f / 990.0f;     // 6 … 60 s, far right = never
+  // Loop: how long it falls apart before rewinding (simulated seconds), far right = never rewind
+  float loopSec = cb_k(11) > 990 ? 0.0f : 4.0f * powf(15.0f, cb_k(11) / 990.0f);   // 4 … 60 s, centre ≈ 16 s
 
   // ── per-preset layout ──
   if (preset == 6) count = 1;                                    // Solo
@@ -415,20 +404,73 @@ void prog_chaos_draw(int preset) {
     default: break;
   }
 
-  // ── relaunch: preset change, count change, k12, or the timer ──
-  static bool k12Was = false;
-  static float since = 0;
-  bool k12 = keysPressed[KEY_MOD_A];
-  bool relaunch = (preset != cb_lastPreset) || (count != cb_n) || (k12 && !k12Was && !keysPressed[KEY_SHIFT]);
-  if (relSec > 0 && since > relSec) relaunch = true;
-  k12Was = k12;
+  // ── the loop ──
+  // idx counts physics steps from the crown (t = 0). Forward: idx grows until the
+  // turn point, where time eases to a halt and swaps direction; the rewind then
+  // runs back to t = 0 (the crown, at rest) and carries straight on forward again.
+  static int32_t idx = 0, flipAt = -1;
+  static int dir = 1;
+  static float stepAcc = 0;
+  static float lA0 = -1, lSpread = -1, lArm = -1;
+  bool changed = fabsf(a0 - lA0) > 0.004f || fabsf(spreadDeg - lSpread) > lSpread * 0.03f || fabsf(armK - lArm) > 0.015f;
+  bool relaunch = (preset != cb_lastPreset) || (count != cb_n);
+  if (changed && (loopSec <= 0 || lA0 < 0)) relaunch = true;     // free-running: apply now; looping: at the seam
   if (relaunch) {
-    cb_launch(count, a0, spreadDeg * (CB_PI / 180.0f));
-    since = 0;
+    cb_launch(count, a0, spreadDeg * (CB_PI / 180.0f), armK);
+    lA0 = a0; lSpread = spreadDeg; lArm = armK;
+    idx = 0; dir = 1; flipAt = -1; stepAcc = 0;
     if (preset != cb_lastPreset) { memset(cb_buf, 0, W * H); cb_liveN = 0; }
-    else cb_flash = 2;
     cb_lastPreset = preset;
   }
+  int32_t loopN = loopSec > 0 ? (int32_t)(loopSec * CB_HZ) : 0x7FFFFFF0;
+  int32_t easeN = (int32_t)(CB_HZ * 1.1f * (speed > 0.2f ? speed : 0.2f));   // ~1 s of slow-motion at the turn
+  // k12: reverse time now (smoothly: it slows to a stop first)
+  static bool k12Was = false;
+  bool k12 = keysPressed[KEY_MOD_A];
+  if (k12 && !k12Was && !keysPressed[KEY_SHIFT]) {
+    int32_t f = idx + dir * easeN;
+    if (dir > 0 || f > 0) flipAt = f;
+  }
+  k12Was = k12;
+
+  // ── simulate: fixed whole-number steps (that's what makes it exactly reversible) ──
+  float simT = dt * speed;
+  int32_t target = dir > 0 ? (flipAt >= 0 && flipAt < loopN ? flipAt : loopN) : flipAt;   // reverse: only a k12 flip
+  float ease = 1.0f;
+  if (target >= 0) {
+    int32_t dist = dir > 0 ? target - idx : idx - target;
+    if (dist < easeN) { float e = dist > 0 ? (float)dist / easeN : 0.0f; ease = 0.05f + 0.95f * e * e * (3.0f - 2.0f * e); }
+  }
+  {   // just after a turn, ease back up to speed
+    static int32_t lastTurn = -1000000;
+    int32_t since = abs(idx - lastTurn);
+    if (since < easeN) { float e = (float)since / easeN; float u = 0.05f + 0.95f * e * e * (3.0f - 2.0f * e); if (u < ease) ease = u; }
+    stepAcc += simT * CB_HZ * ease;
+    int steps = (int)stepAcc;
+    stepAcc -= steps;
+    if (steps > 48) steps = 48;
+    for (int s = 0; s < steps; s++) {
+      if (dir < 0 && idx == 0) {
+        // back at the crown: one more step lands exactly on the launch state (at rest)
+        cb_step(); dir = 1; flipAt = -1;
+        if (changed) {                                              // knob changes take effect at the seam
+          cb_launch(count, a0, spreadDeg * (CB_PI / 180.0f), armK);
+          lA0 = a0; lSpread = spreadDeg; lArm = armK;
+        }
+        continue;
+      }
+      if (target >= 0 && (dir > 0 ? idx >= target : idx <= target)) {   // turn time round
+        cb_reverse(); dir = -dir; flipAt = -1; lastTurn = idx;
+        target = dir > 0 ? loopN : -1;
+        idx += dir;                                                // the swap itself is one step
+        continue;
+      }
+      cb_step();
+      idx += dir;
+    }
+  }
+  float since = idx * (1.0f / CB_HZ);                            // loop time (runs backwards on the rewind)
+  cb_measureDrift();
 
   // Shift + k12: floor reflection on/off (never in Top Bloom: we look straight down)
   {
@@ -443,15 +485,6 @@ void prog_chaos_draw(int preset) {
   float floorY = -(cb_L1 + cb_L2) * lsMax - 0.12f;
   if (preset == 7) floorY = -1.1f - (cb_L1 + cb_L2) * 0.39f - 0.12f;
 
-  // ── simulate (small fixed steps for accuracy) ──
-  float simT = dt * speed;
-  since += simT;
-  int nSub = (int)(simT / 0.004f) + 1;
-  if (nSub > 10) nSub = 10;
-  int32_t h = (int32_t)(simT / (float)nSub * 65536.0f);
-  if (h > 0) for (int s = 0; s < nSub; s++) cb_step(h);
-  cb_measureDrift();
-
   // ── colours ──
   static const uint8_t order[CB_NSCHEME] = {0, 1, 2, 3, 4, 5, 6, 7};
   int sc = cb_k(0) * CB_NSCHEME / 1024;
@@ -463,7 +496,7 @@ void prog_chaos_draw(int preset) {
   if (preset == 6) driftAmt = 0;
   if (cycF > 1.0e6f) cycF = 0;
   int cyc = ((int)cycF) & 255;
-  if (preset == 6) cyc = (cyc + (int)(since * 20.0f)) & 255;     // Solo: the trail changes colour over time
+  if (preset == 6) cyc = (cyc + (int)(since * 20.0f)) & 255;     // Solo: the trail changes colour along the loop
   cb_buildPalette(order[sc], cyc);
   if (cb_flash > 0) cb_flash--;
 
@@ -487,9 +520,23 @@ void prog_chaos_draw(int preset) {
 
   // ── camera ──
   static float yaw = 0;
+  static int32_t idxWas = 0;
   float spk = (cb_sm[8] - 512.0f) / 512.0f;
   if (spk > -0.05f && spk < 0.05f) spk = 0;
-  yaw += dt * (spinBase * (speed > 0 ? 1.0f : 0.0f) + spk * fabsf(spk) * 90.0f) * (CB_PI / 180.0f);
+  {
+    // the built-in slow spin moves with the loop's own steps (so it slows into each turn), and
+    // turns a whole number of times per loop, so a full loop lands exactly where it began
+    int32_t dsteps = abs(idx - idxWas);
+    idxWas = idx;
+    if (dsteps > 64) dsteps = 0;                                  // relaunch
+    float perStep = spinBase * (CB_PI / 180.0f) / CB_HZ;
+    if (loopSec > 0 && spinBase > 0) {
+      float turns = roundf(spinBase * 2.0f * loopSec / 360.0f);
+      if (turns < 1) turns = 1;
+      perStep = turns * CB_TWO_PI / (2.0f * loopN);
+    }
+    yaw += dsteps * perStep + dt * spk * fabsf(spk) * 90.0f * (CB_PI / 180.0f);
+  }
   if (yaw > CB_TWO_PI) yaw -= CB_TWO_PI;
   if (yaw < 0) yaw += CB_TWO_PI;
   float pitch = (pitchBase + (cb_k(9) - 512) * 45.0f / 512.0f) * (CB_PI / 180.0f);
@@ -516,7 +563,7 @@ void prog_chaos_draw(int preset) {
 
   // ── draw every pendulum ──
   for (int i = 0; i < cb_n; i++) {
-    float t1 = cb_t1[i] * (1.0f / 65536.0f), t2 = cb_t2[i] * (1.0f / 65536.0f);
+    const float iq = 1.0f / CB_Q;
     // pivot and swing plane for this pendulum
     float pxw = 0, pyw = 0, pzw = 0, phi = 0, Ls = 1.0f;
     int hue = (cb_n > 1) ? (i * 15 / cb_n) % 15 : 0;
@@ -548,8 +595,8 @@ void prog_chaos_draw(int preset) {
       calm = teff < 110;
     }
     float cph = cb_cos(phi), sph = cb_sin(phi);
-    float u1 = Ls * cb_L1 * cb_sin(t1), v1 = -Ls * cb_L1 * cb_cos(t1);
-    float u2 = u1 + Ls * cb_L2 * cb_sin(t2), v2 = v1 - Ls * cb_L2 * cb_cos(t2);
+    float u1 = Ls * cb_x1[i] * iq, v1 = Ls * cb_y1[i] * iq;
+    float u2 = Ls * cb_x2[i] * iq, v2 = Ls * cb_y2[i] * iq;
     int x0, y0, x1, y1, x2, y2;
     cb_proj(pxw, pyw, pzw, &x0, &y0);
     cb_proj(pxw + u1 * cph, pyw + v1, pzw + u1 * sph, &x1, &y1);

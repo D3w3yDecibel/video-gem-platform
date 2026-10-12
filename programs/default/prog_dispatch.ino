@@ -207,7 +207,8 @@ static void dd_buildPalette(int a, int b, int w, int cyc, int hueOff, int pop) {
 }
 
 // ─── Maths ────────────────────────────────────────────────────────────
-static int16_t dd_sinT[1024];                  // Q14 sine, 1024 steps per turn
+#include "vg_sin.h"
+#define dd_sinT vg_sin1024                        // shared sine table (in flash: no RAM)
 static inline int dd_sin(int a) { return dd_sinT[a & 1023]; }
 static inline int dd_cos(int a) { return dd_sinT[(a + 256) & 1023]; }
 
@@ -831,7 +832,6 @@ void prog_dispatch_init() {
   static bool ready = false;
   if (ready) return;
   ready = true;
-  for (int i = 0; i < 1024; i++) dd_sinT[i] = (int16_t)lroundf(sinf(i * 6.2831853f / 1024.0f) * 16384.0f);
   for (int r = 0; r < DD_SPAN; r++)
     for (int d = 0; d < DD_SPAN; d++) {
       float q = (r + 0.5f) * (r + 0.5f) - (float)(d * d);
@@ -847,7 +847,6 @@ void prog_dispatch_init() {
 }
 
 void prog_dispatch_draw(int preset) {
-  if (dd_sinT[256] == 0) prog_dispatch_init();                  // in case init wasn't called
   dd_buf = display.getBuffer();
 
   static unsigned long lastMs = 0;

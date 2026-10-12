@@ -33,7 +33,8 @@
 // =====================================================================
 
 // ─── Maths ────────────────────────────────────────────────────────────
-static int16_t sf_sinT[1024];                  // Q14 sine, 1024 steps per turn
+#include "vg_sin.h"
+#define sf_sinT vg_sin1024                        // shared sine table (in flash: no RAM)
 static inline int sf_sin(int a) { return sf_sinT[a & 1023]; }
 static inline int sf_cos(int a) { return sf_sinT[(a + 256) & 1023]; }
 static inline int sf_dist(int dx, int dy) {    // max + 3/8·min
@@ -556,14 +557,12 @@ void prog_spectrum_init() {
   static bool ready = false;
   if (!ready) {
     ready = true;
-    for (int i = 0; i < 1024; i++) sf_sinT[i] = (int16_t)lroundf(sinf(i * 6.2831853f / 1024.0f) * 16384.0f);
   }
   memset(sf_life, 0, sizeof(sf_life));
   if (display.getBuffer()) memset(display.getBuffer(), 0, W * H);   // start from black
 }
 
 void prog_spectrum_draw(int preset) {
-  if (sf_sinT[256] == 0) prog_spectrum_init();
   sf_buf = display.getBuffer();
 
   static unsigned long lastMs = 0;

@@ -52,7 +52,8 @@
 // =====================================================================
 
 // ─── Maths ────────────────────────────────────────────────────────────
-static int16_t ia_sinT[256];                    // Q14 sine, 256 steps per turn
+#include "vg_sin.h"
+#define ia_sinT vg_sin256                        // shared sine table (in flash: no RAM)
 static inline int ia_sin(int a) { return ia_sinT[a & 255]; }
 static inline int ia_cos(int a) { return ia_sinT[(a + 64) & 255]; }
 static inline uint32_t ia_hash(int a, int b) {
@@ -936,14 +937,12 @@ void prog_array_init() {
   static bool ready = false;
   if (!ready) {
     ready = true;
-    for (int i = 0; i < 256; i++) ia_sinT[i] = (int16_t)lroundf(sinf(i * 6.2831853f / 256.0f) * 16384.0f);
   }
   for (int k = 0; k < IA_MAXHS; k++) ia_hEp[k] = IA_NOEP;
   if (display.getBuffer()) memset(display.getBuffer(), 0, W * H);   // start from black
 }
 
 void prog_array_draw(int preset) {
-  if (ia_sinT[64] == 0) prog_array_init();
   ia_buf = display.getBuffer();
   if (!ia_buf) return;
   if (preset < 0 || preset >= IA_NUM_PRESETS) preset = 0;

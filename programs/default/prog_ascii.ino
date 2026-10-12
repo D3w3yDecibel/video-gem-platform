@@ -142,7 +142,8 @@ static void aw_buildPalette(int sc, int tod, int pop, int flash) {
 }
 
 // ─── Maths ────────────────────────────────────────────────────────────
-static int16_t aw_sinT[1024];
+#include "vg_sin.h"
+#define aw_sinT vg_sin1024                        // shared sine table (in flash: no RAM)
 static inline int aw_sin(int a) { return aw_sinT[a & 1023]; }
 static inline int aw_cos(int a) { return aw_sinT[(a + 256) & 1023]; }
 static uint32_t aw_seed = 1;
@@ -872,7 +873,6 @@ void prog_ascii_init() {
   static bool ready = false;
   if (ready) return;
   ready = true;
-  for (int i = 0; i < 1024; i++) aw_sinT[i] = (int16_t)lroundf(sinf(i * 6.2831853f / 1024.0f) * 16384.0f);
   for (int g = 0; g < AG_N; g++) {
     uint16_t b = 0;
     for (int k = 0; k < 15; k++) if (aw_fontSrc[g][k] == '1') b |= (uint16_t)(1 << (14 - k));
@@ -881,7 +881,6 @@ void prog_ascii_init() {
 }
 
 void prog_ascii_draw(int preset) {
-  if (aw_sinT[256] == 0) prog_ascii_init();
   uint8_t* buf = display.getBuffer();
 
   static unsigned long lastMs = 0;

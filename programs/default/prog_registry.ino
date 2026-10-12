@@ -12,7 +12,12 @@ ProgEntry g_programs[] = {
   PROG_ENTRY_EX(3, prog_ascii, prog_ascii_init, PROG_FLAG_OWNS_GLOBALS),  // ASCII Worlds (Dewey) — replaces Inputs
   PROG_ENTRY_EX(4, prog_array, prog_array_init, PROG_FLAG_OWNS_GLOBALS),  // Illuminated Array (Dewey) — new on slot 4
   PROG_ENTRY_EX(5, prog_chaos, prog_chaos_init, PROG_FLAG_OWNS_GLOBALS),  // Chaos Crown (Dewey) — new on slot 5
-  PROG_ENTRY(9, prog_bitmaps),
+  PROG_ENTRY_EX(6, prog_harbor, prog_harbor_init, PROG_FLAG_OWNS_GLOBALS),  // Harbor Night (Dewey) — new on slot 6
+  PROG_ENTRY_EX(7, prog_scope, prog_scope_init, PROG_FLAG_OWNS_GLOBALS),  // Scope (Dewey) — new on slot 7
+  PROG_ENTRY_EX(8, prog_cilia, prog_cilia_init, PROG_FLAG_OWNS_GLOBALS),  // Cilia (Dewey) — new on slot 8
+  PROG_ENTRY_EX(9, prog_mosaic, prog_mosaic_init, PROG_FLAG_OWNS_GLOBALS),  // Mosaic (Dewey) — new on slot 9
+  PROG_ENTRY_EX(10, prog_bugs, prog_bugs_init, PROG_FLAG_OWNS_GLOBALS),  // Bugs (Dewey) — new on slot 10
+  // PROG_ENTRY(10, prog_bitmaps),  // Bitmaps (RMNA) — off the keypad for now; swap with the line above to bring it back
   PROG_ENTRY(11, prog_fx),
 };
 int g_numPrograms = sizeof(g_programs) / sizeof(g_programs[0]);
