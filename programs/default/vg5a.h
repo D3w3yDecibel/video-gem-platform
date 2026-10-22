@@ -157,7 +157,16 @@ static void a5_num(char* o, uint32_t v, int digits) {           // zero-padded n
 #define A5_IDLE 8.0f
 static bool a5_player = false, a5_refOK = false, a5_k12was = false, a5_fire = false, a5_fireHeld = false, a5_touched = false;
 static float a5_idle = 99.0f, a5_ref[2], a5_join = 0;
-static void a5_reset() { a5_refOK = false; a5_player = false; a5_idle = 99.0f; a5_join = 0; }
+static float a5_camRef = 512; static bool a5_camArmed = false, a5_camRefOK = false;
+static float a5_spRef = 512; static bool a5_spArmed = false, a5_spRefOK = false;
+static void a5_reset() { a5_refOK = false; a5_player = false; a5_idle = 99.0f; a5_join = 0; a5_camArmed = false; a5_camRefOK = false; a5_spArmed = false; a5_spRefOK = false; fx5_disarm(); }
+static inline float a5_stick(int i);
+// p6 (camera) also wakes up only once it's turned
+static float a5_cam() {
+  if (!a5_camRefOK) { a5_camRef = v3_sm[6]; a5_camRefOK = true; }
+  if (!a5_camArmed && fabsf(v3_sm[6] - a5_camRef) > 40.0f) a5_camArmed = true;
+  return a5_camArmed ? a5_stick(6) : 0.0f;
+}
 static void a5_input() {
   a5_touched = false;
   if (!a5_refOK) { a5_ref[0] = v3_sm[0]; a5_ref[1] = v3_sm[1]; a5_refOK = true; }
@@ -184,7 +193,11 @@ static int a5_dir4() {
 }
 
 // ─── Common knobs ─────────────────────────────────────────────────────
-static float a5_speedK() { return v3_speed(2, 3.0f); }
+static float a5_speedK() {                         // like p6, p2 only takes effect once turned (a knob left far left would freeze the game)
+  if (!a5_spRefOK) { a5_spRef = v3_sm[2]; a5_spRefOK = true; }
+  if (!a5_spArmed && fabsf(v3_sm[2] - a5_spRef) > 40.0f) a5_spArmed = true;
+  return a5_spArmed ? v3_speed(2, 3.0f) : 1.0f;
+}
 static int a5_lookK(int own) { return v3_centre(3) ? own : v3_clamp(v3_k(3) * A5_NLOOK / 1024, 0, A5_NLOOK - 1); }
 static float a5_trailK(float own) { return v3_centre(4) ? own : v3_u(4); }
 static float a5_diffK(float own) { return v3_centre(5) ? own : v3_u(5); }   // 0 easy … 1 hard
@@ -341,7 +354,7 @@ static void a5_post(int fx, int fy) {
     if (sx) for (int y = 0; y < H; y++) a5_rotRow(v3_buf + y * W, sx);
   }
   a5_shakeAmt *= 0.86f; if (a5_shakeAmt < 0.3f) a5_shakeAmt = 0;
-  float c = a5_stick(6), zt = c > 0 ? 1.0f + c * 1.6f : 1.0f;
+  float c = a5_cam(), zt = c > 0 ? 1.0f + c * 1.6f : 1.0f;
   a5_zoomNow += (zt - a5_zoomNow) * v3_clampf(v3_dt * 4.0f, 0.0f, 1.0f);
   a5_camX += (fx - a5_camX) * v3_clampf(v3_dt * 3.0f, 0.0f, 1.0f);
   a5_camY += (fy - a5_camY) * v3_clampf(v3_dt * 3.0f, 0.0f, 1.0f);
@@ -364,7 +377,7 @@ static void a5_post(int fx, int fy) {
 }
 // at the very end: p6 turned left darkens every other row (CRT scanlines)
 static void a5_crt() {
-  float c = a5_stick(6);
+  float c = a5_cam();
   if (c >= 0) return;
   int amt = 1 + (int)(-c * 9.0f);
   uint32_t sub = (uint32_t)amt * 0x01010101u;

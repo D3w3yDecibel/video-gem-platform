@@ -34,8 +34,17 @@ static inline float fx5_knob(int i) {
   if (k < 440) return -(440.0f - k) / 440.0f;
   return (k - 600.0f) / 423.0f;
 }
+// The FX knobs wake up only once you turn them: wherever they happen to be when a program starts,
+// they do nothing until moved (so a knob left at an end doesn't surprise you with a mirrored screen).
+static float fx5_ref[4]; static bool fx5_armed[4], fx5_refOK = false;
+static void fx5_disarm() { fx5_refOK = false; for (int i = 0; i < 4; i++) fx5_armed[i] = false; }
 static void fx5_take() {
-  for (int i = 0; i < 4; i++) { fx5_amt[i] = v3_clampf(fx5_knob(12 + i), -1.0f, 1.0f); fx5_saved[i] = v3_sm[12 + i]; v3_sm[12 + i] = 512.0f; }
+  if (!fx5_refOK) { for (int i = 0; i < 4; i++) fx5_ref[i] = v3_sm[12 + i]; fx5_refOK = true; }
+  for (int i = 0; i < 4; i++) {
+    if (!fx5_armed[i] && fabsf(v3_sm[12 + i] - fx5_ref[i]) > 40.0f) fx5_armed[i] = true;
+    fx5_amt[i] = fx5_armed[i] ? v3_clampf(fx5_knob(12 + i), -1.0f, 1.0f) : 0.0f;
+    fx5_saved[i] = v3_sm[12 + i]; v3_sm[12 + i] = 512.0f;
+  }
   bool col = fx5_amt[2] != 0.0f;
   fx5_palReset = col || fx5_colWas;                  // rebuild once more after it's turned off, to undo it
   fx5_colWas = col;
