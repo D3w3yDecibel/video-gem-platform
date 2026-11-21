@@ -1,0 +1,50 @@
+// =====================================================================
+// PROGRAM REGISTRY — SET 7 "OP-ART" (Dewey)
+//
+// Set 7: twelve programs of optical art — patterns that make the eye see
+// motion, depth, glow and colour that aren't there. One technique each:
+//
+//   slot 0  RILEY     — Bridget Riley's wave paintings and Movement in Squares
+//   slot 1  VEGA      — Vasarely's chequerboards bulging, sinking and twisting
+//   slot 2  GRATING   — moiré: gratings of lines and rings beating into fringes
+//   slot 3  ROTO      — Duchamp's Rotoreliefs, hypnotic spirals, Riley's Blaze
+//   slot 4  CUBES     — tumbling blocks that keep flipping inside out
+//   slot 5  WEAVE     — woven ribbons over and under
+//   slot 6  DOTS      — Vasarely's dot fields over hidden moving shapes
+//   slot 7  ILLUSION  — café wall, scintillating grid, Ouchi, drift and more
+//   slot 8  INFINITY  — nested squares, circles and stars falling forever
+//   slot 9  SOTO      — Soto's vibrating squares and hanging rods
+//   slot 10 AGAM      — Agam's folded pictures that change as the view swings
+//   slot 11 ALBERS    — Homage to the Square and Anuszkiewicz's glowing lines
+//
+// Every program: presets k0-k10, k11 = Tour (changes look every ~20 s), k12 = its
+// own action. Common knobs: p0 Palette, p1 Speed, p2 Zoom, p3 Colour Flow,
+// p4 Hue Spread; p5-p10 are the program's own; p11 Colour (far left = black &
+// white, centre = the preset's own, right = full colour); p12-p15 live FX
+// (vg5fx.h). p1 and p12-p15 do nothing until you turn them.
+//
+// Shared engine: vg7op.h, on vg6.h (Set 6), vg5fx.h and vg3.h.
+// Switch program: hold k14 (Control) + k15 (Shift) and press k0-k11.
+// The screen shows "PROGRAM n" with n = slot + 1.
+//
+// Older sets may still be in this folder but are not listed here, so the
+// linker leaves them out: they cost no RAM.
+//
+// RAM budget: keep the compile's "Global variables" under ~88 KB.
+// =====================================================================
+
+ProgEntry g_programs[] = {
+  PROG_ENTRY_EX(0, prog_riley, prog_riley_init, PROG_FLAG_OWNS_GLOBALS),          // RILEY — slot 0
+  PROG_ENTRY_EX(1, prog_vega, prog_vega_init, PROG_FLAG_OWNS_GLOBALS),            // VEGA — slot 1
+  PROG_ENTRY_EX(2, prog_grating, prog_grating_init, PROG_FLAG_OWNS_GLOBALS),      // GRATING — slot 2
+  PROG_ENTRY_EX(3, prog_roto, prog_roto_init, PROG_FLAG_OWNS_GLOBALS),            // ROTO — slot 3
+  PROG_ENTRY_EX(4, prog_cubes, prog_cubes_init, PROG_FLAG_OWNS_GLOBALS),          // CUBES — slot 4
+  PROG_ENTRY_EX(5, prog_weave, prog_weave_init, PROG_FLAG_OWNS_GLOBALS),          // WEAVE — slot 5
+  PROG_ENTRY_EX(6, prog_dots, prog_dots_init, PROG_FLAG_OWNS_GLOBALS),            // DOTS — slot 6
+  PROG_ENTRY_EX(7, prog_illusion, prog_illusion_init, PROG_FLAG_OWNS_GLOBALS),    // ILLUSION — slot 7
+  PROG_ENTRY_EX(8, prog_infinity, prog_infinity_init, PROG_FLAG_OWNS_GLOBALS),    // INFINITY — slot 8
+  PROG_ENTRY_EX(9, prog_soto, prog_soto_init, PROG_FLAG_OWNS_GLOBALS),            // SOTO — slot 9
+  PROG_ENTRY_EX(10, prog_agam, prog_agam_init, PROG_FLAG_OWNS_GLOBALS),           // AGAM — slot 10
+  PROG_ENTRY_EX(11, prog_albers, prog_albers_init, PROG_FLAG_OWNS_GLOBALS),       // ALBERS — slot 11
+};
+int g_numPrograms = sizeof(g_programs) / sizeof(g_programs[0]);
